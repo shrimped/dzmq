@@ -1,10 +1,9 @@
-Simple library (with implementations in languages of interest) to do discovery
-on top of zeromq messaging.  The intent is that this library would be
-incorporated into other projects, where things like message serialization would
-be added.
+Simple library (with reference Python implementation) to do discovery
+on top of zeromq messaging. This is a modification of the ROS 2.0 zmq
+prototype to implement messaging + discovery via zmq with serialization
+handled through BSON.
 
-Raw message definitions:
-
+All messages are defined in [BSON][bson]
   * Header (HDR):
     * VERSION: 2 bytes
     * GUID: 16 bytes; ID that is unique to the process, generated according
@@ -57,3 +56,5 @@ API sketch:
   * `rep <- call_service(topic, req, timeout)`
   * `call_service_async(topic, req, cb)`
     * `cb(topic, rep)`
+
+[bson]:
