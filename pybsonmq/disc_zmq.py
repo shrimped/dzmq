@@ -12,15 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Code modified 2015 by the United States Air Force
+
 import socket
 import zmq
 import uuid
 import os
 import struct
 import threading
-import random
 import signal
 import sys
+from bson import BSON, Binary
+import numpy as np
+import pickle
+import struct
 
 # Defaults and overrides
 ADV_SUB_PORT = 11312
@@ -41,6 +46,31 @@ ADDRESS_MAXLENGTH = 267
 
 # We want this called once per process
 GUID = uuid.uuid1()
+
+# Get Numpy Subtype for picklin' numpy.ndarray
+NUMPY_SUBTYPE = 128
+
+
+def bson_dump(obj):
+    for (key, value) in obj.items():
+        if isinstance(value, np.ndarray):
+            obj[key] = Binary(pickle.dumps(value, protocol=-1),
+                              subtype=NUMPY_SUBTYPE)
+        elif isinstance(value, dict):  # Make sure we recurse into sub-dicts
+            obj[key] = bson_dump(value)
+    return BSON.encode(obj)
+
+
+def bson_load(data):
+    def unpack(obj):
+        for (key, value) in obj.items():
+            if isinstance(value, Binary) and value.subtype == NUMPY_SUBTYPE:
+                obj[key] = pickle.loads(value)
+            elif isinstance(value, dict):
+                # Again, make sure to recurse into sub-dicts
+                obj[key] = unpack(value)
+        return obj
+    return unpack(BSON.decode(data))
 
 
 class DZMQ:
