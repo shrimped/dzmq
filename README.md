@@ -3,23 +3,22 @@ on top of zeromq messaging. This is a modification of the ROS 2.0 zmq
 prototype to implement messaging + discovery via zmq with serialization
 handled through BSON.
 
-All messages are defined in [BSON][bson]
-  * Header (HDR):
-    * VERSION: 2 bytes
-    * GUID: 16 bytes; ID that is unique to the process, generated according
+All messages are defined in [BSON][bson], with the following schema:
+
+  * Header (bisonmq.header):
+    * version: double
+    * guid: string; ID that is unique to the process, generated according
       to RFC 4122
-    * TOPICLENGTH: 1 byte; length, in bytes, of TOPIC
-    * TOPIC: string; max 192 bytes
-    * TYPE: 1 byte
-    * FLAGS: 16 bytes (unused for now)
-    * (max total: 2+16+1+192+1+16 = 228)
+    * topic: string; Name of topic
+    * type: string; Unique topic type for filtering
+    * stamp: int64; Timestamp of message time of validity
 
   * advertisement (ADV) or advertisement of service (ADV\_SVC):
-    * HDR (TYPE = 1)
-    * ADDRESSLENGTH: 2 bytes; length, in bytes, of ADDRESSES
-    * ADDRESS: one valid ZeroMQ address (e.g., "tcp://10.0.0.1:6000"); max
-      length 6+255+6=267 bytes
-    * (max total: 228+267=495)
+    * header: bisonmq.HDR (TYPE = ADV)
+    * ADDRESS: string; one valid ZeroMQ address (e.g., "tcp://10.0.0.1:6000");
+    * TYPE: string; Type of message/service being advertised
+    * RATE:
+    * FOM: int32; Figure of Merit
 
   * subscription (SUB) or subscription to service (SUB\_SVC):
     * HDR (TYPE = 2)
