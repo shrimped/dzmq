@@ -22,6 +22,9 @@ import threading
 import signal
 import sys
 
+from bson import BSON, Binary
+import numpy as np
+
 # Defaults and overrides
 ADV_SUB_PORT = 11312
 DZMQ_PORT_KEY = 'DZMQ_BCAST_PORT'
@@ -41,6 +44,32 @@ ADDRESS_MAXLENGTH = 267
 
 # We want this called once per process
 GUID = uuid.uuid1()
+
+
+def from_bson(data):
+    def unpack(obj):
+        for (key, value) in obj.items():
+            if isinstance(value, dict):
+                if 'shape' in value and 'dtype' in value and 'data' in value:
+                    obj[key] = np.frombuffer(value['data'],
+                                             dtype=value['dtype'])
+                    obj[key] = obj[key].reshape(value['shape'])
+                else:
+                    # Make sure to recurse into sub-dicts
+                    obj[key] = unpack(value)
+        return obj
+    return unpack(BSON.decode(data))
+
+
+def to_bson(obj):
+    for (key, value) in obj.items():
+        if isinstance(value, np.ndarray):
+            obj[key] = dict(shape=value.shape,
+                            dtype=value.dtype,
+                            data=Binary(value.tobytes()))
+        elif isinstance(value, dict):  # Make sure we recurse into sub-dicts
+            obj[key] = to_bson(value)
+    return BSON.encode(obj)
 
 
 class DZMQ(object):
@@ -258,6 +287,7 @@ class DZMQ(object):
         advertise() on the topic first.
         """
         if [p for p in self.publishers if p['topic'] == topic]:
+            msg = to_bson(msg)
             self.pub_socket.send_multipart((topic, msg))
 
     def _handle_adv_sub(self, msg):
@@ -386,6 +416,7 @@ class DZMQ(object):
                 sock = e[0]
                 # Get the message (assuming that we get it all in one read)
                 topic, header, msg = sock.recv_multipart()
+                msg = from_bson(msg)
                 # Invoke all the callbacks registered for this topic.
                 [s['cb'](topic, msg) for s in self.subscribers if s['topic']
                  == topic]
