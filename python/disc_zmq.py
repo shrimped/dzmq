@@ -16,9 +16,9 @@ import socket
 import zmq
 import uuid
 import os
+import platform
 import struct
 import threading
-import random
 import signal
 import sys
 
@@ -42,29 +42,35 @@ ADDRESS_MAXLENGTH = 267
 # We want this called once per process
 GUID = uuid.uuid1()
 
-class DZMQ:
+
+class DZMQ(object):
+
     """
     This class provides a basic pub/sub system with discovery.  Basic
     publisher:
-import disc_zmq
-d = disc_zmq.DZMQ()
-d.advertise('foo')
-msg = 'bar'
-while True:
-    d.publish('foo', msg)
-    d.spinOnce(0.1)
+
+    import disc_zmq
+    d = disc_zmq.DZMQ()
+    d.advertise('foo')
+    msg = 'bar'
+    while True:
+        d.publish('foo', msg)
+        d.spinOnce(0.1)
 
     Basic subscriber:
-from __future__ import print_function
-import disc_zmq
-d = disc_zmq.DZMQ()
-d.subscribe('foo', lambda topic,msg: print('Got %s on %s'%(topic,msg)))
-d.spin()
+
+    from __future__ import print_function
+    import disc_zmq
+    d = disc_zmq.DZMQ()
+    d.subscribe('foo', lambda topic,msg: print('Got %s on %s'%(topic,msg)))
+    d.spin()
+
     """
+
     def __init__(self, context=None):
         self.context = context or zmq.Context.instance()
 
-        # Determine network addresses.  Look at environment variables, and 
+        # Determine network addresses.  Look at environment variables, and
         # fall back on defaults.
 
         # What IP address will we give to others to use when contacting us?
@@ -95,20 +101,22 @@ d.spin()
             # TODO: consider computing a more specific broadcast address based
             # on the result of get_local_addresses()
             # The following line isn't correct because it doesn't take account
-            # of the netmask, but it allows the code to run without sudo on OSX.
+            # of the netmask, but it allows the code to run without sudo
+            # on OSX.
             self.bcast_host = '.'.join(self.ipaddr.split('.')[:-1] + ['255'])
 
         # Set up to listen to broadcasts
-        self.bcast_recv = socket.socket(socket.AF_INET, # Internet
-                                        socket.SOCK_DGRAM) # UDP
+        self.bcast_recv = socket.socket(socket.AF_INET,  # Internet
+                                        socket.SOCK_DGRAM)  # UDP
         self.bcast_recv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        import platform
+
         if platform.system() in ['Darwin']:
-            self.bcast_recv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            self.bcast_recv.setsockopt(socket.SOL_SOCKET,
+                                       socket.SO_REUSEPORT, 1)
         self.bcast_recv.bind((self.bcast_host, self.bcast_port))
         # Set up to send broadcasts
-        self.bcast_send = socket.socket(socket.AF_INET, # Internet
-                                        socket.SOCK_DGRAM) # UDP
+        self.bcast_send = socket.socket(socket.AF_INET,  # Internet
+                                        socket.SOCK_DGRAM)  # UDP
         self.bcast_send.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
         # Bookkeeping (which should be cleaned up)
@@ -124,13 +132,13 @@ d.spin()
         # Set up the one pub and one sub socket that we'll use
         self.pub_socket = self.context.socket(zmq.PUB)
         self.pub_socket_addrs = []
-        tcp_addr = 'tcp://%s'%(self.ipaddr)
+        tcp_addr = 'tcp://%s' % (self.ipaddr)
         tcp_port = self.pub_socket.bind_to_random_port(tcp_addr)
-        tcp_addr += ':%d'%(tcp_port)
+        tcp_addr += ':%d' % (tcp_port)
         if len(tcp_addr) > ADDRESS_MAXLENGTH:
             raise Exception('TCP address length %d exceeds maximum %d'
-                            %(len(tcp_addr), ADDRESS_MAXLENGTH))
-        self.pub_socket_addrs.append(tcp_addr) 
+                            % (len(tcp_addr), ADDRESS_MAXLENGTH))
+        self.pub_socket_addrs.append(tcp_addr)
         self.sub_socket = self.context.socket(zmq.SUB)
         self.sub_socket_addrs = []
 
@@ -150,18 +158,18 @@ d.spin()
         msg += struct.pack('<H', VERSION)
         # TODO: pack the GUID more efficiently; should only need one call to
         # struct.pack()
-        for i in range(0,GUID_LENGTH):
-            msg += struct.pack('<B', (GUID.int >> i*8) & 0xFF)
+        for i in range(0, GUID_LENGTH):
+            msg += struct.pack('<B', (GUID.int >> i * 8) & 0xFF)
         msg += struct.pack('<B', len(publisher['topic']))
         msg += publisher['topic']
         msg += struct.pack('<B', OP_ADV)
         # Flags unused for now
         flags = [0x00] * FLAGS_LENGTH
-        msg += struct.pack('<%dB'%(FLAGS_LENGTH), *flags)
+        msg += struct.pack('<%dB' % (FLAGS_LENGTH), *flags)
         # We'll announce once for each address
         for addr in publisher['addresses']:
             if addr.startswith('inproc'):
-                # Don't broadcast inproc addresses        
+                # Don't broadcast inproc addresses
                 continue
             # Struct objects copy by value
             mymsg = msg
@@ -175,10 +183,10 @@ d.spin()
         """
         if len(topic) > TOPIC_MAXLENGTH:
             raise Exception('Topic length %d exceeds maximum %d'
-                            %(len(topic), TOPICLENGTH))
+                            % (len(topic), TOPIC_MAXLENGTH))
         publisher = {}
         publisher['socket'] = self.pub_socket
-        inproc_addr = 'inproc://%s'%(topic)
+        inproc_addr = 'inproc://%s' % topic
         # TODO: consider race condition in this test and set:
         if inproc_addr not in self.pub_socket_addrs:
             publisher['socket'].bind(inproc_addr)
@@ -209,14 +217,14 @@ d.spin()
         msg += struct.pack('<H', VERSION)
         # TODO: pack the GUID more efficiently; should only need one call to
         # struct.pack()
-        for i in range(0,GUID_LENGTH):
-            msg += struct.pack('<B', (GUID.int >> i*8) & 0xFF)
+        for i in range(0, GUID_LENGTH):
+            msg += struct.pack('<B', (GUID.int >> i * 8) & 0xFF)
         msg += struct.pack('<B', len(subscriber['topic']))
         msg += subscriber['topic']
         msg += struct.pack('<B', OP_SUB)
         # Flags unused for now
         flags = [0x00] * FLAGS_LENGTH
-        msg += struct.pack('<%dB'%(FLAGS_LENGTH), *flags)
+        msg += struct.pack('<%dB' % FLAGS_LENGTH, *flags)
         # Null body
         self.bcast_send.sendto(msg, (self.bcast_host, self.bcast_port))
 
@@ -235,7 +243,7 @@ d.spin()
         # Also connect to internal publishers, if there are any
         adv = {}
         adv['topic'] = subscriber['topic']
-        adv['address'] = 'inproc://%s'%(subscriber['topic'])
+        adv['address'] = 'inproc://%s' % subscriber['topic']
         adv['guid'] = GUID
         for pub in self.publishers:
             if pub['topic'] == subscriber['topic']:
@@ -258,26 +266,25 @@ d.spin()
         """
         try:
             data, addr = msg
-            #print('%s sent %s'%(addr, data))
             # Unpack the header
             offset = 0
             version = struct.unpack_from('<H', data, offset)[0]
             if version != VERSION:
                 print('Warning: mismatched protocol versions: %d != %d'
-                      %(version, VERSION))
+                      % (version, VERSION))
             offset += 2
             guid_int = 0
-            for i in range(0,GUID_LENGTH):
-                guid_int += struct.unpack_from('<B', data, offset)[0] << 8*i
+            for i in range(0, GUID_LENGTH):
+                guid_int += struct.unpack_from('<B', data, offset)[0] << 8 * i
                 offset += 1
             guid = uuid.UUID(int=guid_int)
             topiclength = struct.unpack_from('<B', data, offset)[0]
             offset += 1
-            topic = data[offset:offset+topiclength]
+            topic = data[offset:offset + topiclength]
             offset += topiclength
             op = struct.unpack_from('<B', data, offset)[0]
             offset += 1
-            flags = struct.unpack_from('<%dB'%(FLAGS_LENGTH), data, offset)
+            flags = struct.unpack_from('<%dB' % FLAGS_LENGTH, data, offset)
             offset += FLAGS_LENGTH
 
             if op == OP_ADV:
@@ -288,10 +295,9 @@ d.spin()
                 adv['flags'] = flags
                 addresslength = struct.unpack_from('<H', data, offset)[0]
                 offset += 2
-                adv['address'] = data[offset:offset+addresslength]
+                adv['address'] = data[offset:offset + addresslength]
                 offset += addresslength
-                #print('ADV: %s'%(adv))
-                
+
                 # Are we interested in this topic?
                 if [s for s in self.subscribers if s['topic'] == adv['topic']]:
                     # Yes, we're interested; make a connection
@@ -299,16 +305,17 @@ d.spin()
 
             elif op == OP_SUB:
                 # The SUB body is NULL
-                #print('SUB: %s'%(msg))
                 # If we're publishing this topic, re-advertise it to allow the
                 # new subscriber to find us.
-                [self._advertise(p) for p in self.publishers if p['topic'] == topic]
+                [self._advertise(p) for p in self.publishers
+                 if p['topic'] == topic]
 
             else:
-                print('Warning: got unrecognized OP: %d'%(op))
+                print('Warning: got unrecognized OP: %d' % op)
 
         except Exception as e:
-            print('Warning: exception while processing SUB or ADV message: %s'%(e))
+            print('Warning: exception while processing SUB or ADV message: %s'
+                  % e)
 
     def _connect_subscriber(self, adv):
         """
@@ -318,7 +325,6 @@ d.spin()
         # as our GUID, then we must both be in the same process, in which case
         # we'd like to use an 'inproc://' address.  Otherwise, fall back on
         # 'tcp://'.
-        #print("Considering %s"%(adv))
         if adv['address'].startswith('tcp'):
             if adv['guid'] == GUID:
                 # Us; skip it
@@ -328,12 +334,13 @@ d.spin()
                 # Not us; skip it
                 return
         else:
-            print('Warning: ingoring unknown address type: %s'%(adv['address']))
+            print('Warning: ingoring unknown address type: %s' %
+                  (adv['address']))
             return
 
         # Are we already connected to this publisher for this topic?
-        if [c for c in self.sub_connections if c['topic'] == adv['topic'] and c['guid'] == adv['guid']]:
-            #print('Not connecting again to %s'%(adv['address']))
+        if [c for c in self.sub_connections
+                if c['topic'] == adv['topic'] and c['guid'] == adv['guid']]:
             return
         # Connect our subscriber socket
         conn = {}
@@ -344,12 +351,14 @@ d.spin()
         conn['socket'].setsockopt(zmq.SUBSCRIBE, adv['topic'])
         self.sub_connections.append(conn)
         conn['socket'].connect(adv['address'])
-        print('Connected to %s for %s (%s != %s)'%(adv['address'], adv['topic'],
-adv['guid'], GUID))
+        print('Connected to %s for %s (%s != %s)' % (adv['address'],
+                                                     adv['topic'],
+                                                     adv['guid'], GUID))
 
     def _advertisement_repeater(self):
         [self._advertise(p) for p in self.publishers]
-        self.adv_timer = threading.Timer(ADV_REPEAT_PERIOD, self._advertisement_repeater)
+        self.adv_timer = threading.Timer(
+            ADV_REPEAT_PERIOD, self._advertisement_repeater)
         self.adv_timer.start()
 
     def spinOnce(self, timeout=-1):
@@ -363,7 +372,7 @@ adv['guid'], GUID))
             timeout = None
         else:
             # zmq wants the timeout in milliseconds
-            timeout = int(timeout*1e3)
+            timeout = int(timeout * 1e3)
         # Look for sockets that are ready to read
         events = self.poller.poll(timeout)
         # Process the events
@@ -379,7 +388,7 @@ adv['guid'], GUID))
                 topic, header, msg = sock.recv_multipart()
                 # Invoke all the callbacks registered for this topic.
                 [s['cb'](topic, msg) for s in self.subscribers if s['topic']
-== topic]
+                 == topic]
 
     def spin(self):
         """
@@ -392,6 +401,8 @@ adv['guid'], GUID))
 # https://github.com/ros/ros_comm/blob/hydro-devel/tools/rosgraph/src/rosgraph/network.py
 # cache for performance reasons
 _local_addrs = None
+
+
 def get_local_addresses(use_ipv6=False):
     """
     :returns: known local addresses. Not affected by ROS_IP/ROS_HOSTNAME,
@@ -418,9 +429,11 @@ def get_local_addresses(use_ipv6=False):
                 # https://bugs.launchpad.net/ubuntu/+source/netifaces/+bug/753009
                 continue
             if socket.AF_INET in ifaddrs:
-                v4addrs.extend([addr['addr'] for addr in ifaddrs[socket.AF_INET]])
+                v4addrs.extend([addr['addr']
+                                for addr in ifaddrs[socket.AF_INET]])
             if socket.AF_INET6 in ifaddrs:
-                v6addrs.extend([addr['addr'] for addr in ifaddrs[socket.AF_INET6]])
+                v6addrs.extend([addr['addr']
+                                for addr in ifaddrs[socket.AF_INET6]])
         if use_ipv6:
             local_addrs = v6addrs + v4addrs
         else:
@@ -428,8 +441,10 @@ def get_local_addresses(use_ipv6=False):
     else:
         # cross-platform branch, can only resolve one address
         if use_ipv6:
-            local_addrs = [host[4][0] for host in socket.getaddrinfo(socket.gethostname(), 0, 0, 0, socket.SOL_TCP)]
+            local_addrs = [host[4][0] for host in socket.getaddrinfo(
+                socket.gethostname(), 0, 0, 0, socket.SOL_TCP)]
         else:
-            local_addrs = [host[4][0] for host in socket.getaddrinfo(socket.gethostname(), 0, socket.AF_INET, 0, socket.SOL_TCP)]
+            local_addrs = [host[4][0] for host in socket.getaddrinfo(
+                socket.gethostname(), 0, socket.AF_INET, 0, socket.SOL_TCP)]
     _local_addrs = local_addrs
     return local_addrs
