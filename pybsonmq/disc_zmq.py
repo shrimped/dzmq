@@ -301,7 +301,8 @@ class DZMQ(object):
         """
         if [p for p in self.publishers if p['topic'] == topic]:
             msg = to_bson(msg)
-            print(repr(msg))
+            with open('log.txt', 'a') as fid:
+                fid.write('Sending\n')
             self.pub_socket.send_multipart((topic, msg))
 
     def _handle_adv_sub(self, msg):
@@ -345,6 +346,7 @@ class DZMQ(object):
                 # Are we interested in this topic?
                 if [s for s in self.subscribers if s['topic'] == adv['topic']]:
                     # Yes, we're interested; make a connection
+                    print('connect yo', adv)
                     self._connect_subscriber(adv)
 
             elif op == OP_SUB:
@@ -425,16 +427,17 @@ class DZMQ(object):
             # Todo: handle heartbeat/status checks
             if e[0] == self.bcast_recv.fileno():
                 # Assume that we get the whole message in one go
+                print('broadcast here')
                 self._handle_adv_sub(self.bcast_recv.recvfrom(UDP_MAX_SIZE))
             else:
+                print('I am in this spot')
                 # Must be a zmq socket
                 sock = e[0]
                 # Get the message (assuming that we get it all in one read)
                 topic, msg = sock.recv_multipart()
-                print(msg)
-                msg = from_bson(msg)
+                print('Got something')
                 # Invoke all the callbacks registered for this topic.
-                [s['cb'](topic, msg) for s in self.subscribers if s['topic']
+                [s['cb'](topic, from_bson(msg)) for s in self.subscribers if s['topic']
                  == topic]
 
     def spin(self):
