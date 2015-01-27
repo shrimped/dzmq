@@ -60,18 +60,18 @@ def from_bson(data):
                     # Make sure to recurse into sub-dicts
                     obj[key] = unpack(value)
         return obj
-    return unpack(BSON.decode(data))
+    return unpack(BSON(data).decode())
 
 
 def to_bson(obj):
     for (key, value) in obj.items():
         if isinstance(value, np.ndarray):
             obj[key] = dict(shape=value.shape,
-                            dtype=value.dtype,
+                            dtype=value.dtype.str,
                             data=Binary(value.tobytes()))
         elif isinstance(value, dict):  # Make sure we recurse into sub-dicts
             obj[key] = to_bson(value)
-    return BSON.encode(obj)
+    return BSON().encode(obj)
 
 
 class DZMQ(object):
@@ -301,6 +301,7 @@ class DZMQ(object):
         """
         if [p for p in self.publishers if p['topic'] == topic]:
             msg = to_bson(msg)
+            print(repr(msg))
             self.pub_socket.send_multipart((topic, msg))
 
     def _handle_adv_sub(self, msg):
@@ -429,7 +430,8 @@ class DZMQ(object):
                 # Must be a zmq socket
                 sock = e[0]
                 # Get the message (assuming that we get it all in one read)
-                topic, header, msg = sock.recv_multipart()
+                topic, msg = sock.recv_multipart()
+                print(msg)
                 msg = from_bson(msg)
                 # Invoke all the callbacks registered for this topic.
                 [s['cb'](topic, msg) for s in self.subscribers if s['topic']
