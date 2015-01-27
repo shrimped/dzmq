@@ -13,16 +13,18 @@ All messages are defined in [BSON][bson], with the following schema:
     * type: string; Unique topic type for filtering
     * stamp: int64; Timestamp of message time of validity
 
-  * advertisement (ADV) or advertisement of service (ADV\_SVC):
-    * header: bisonmq.HDR (TYPE = ADV)
-    * ADDRESS: string; one valid ZeroMQ address (e.g., "tcp://10.0.0.1:6000");
-    * TYPE: string; Type of message/service being advertised
-    * RATE:
-    * FOM: int32; Figure of Merit
+  * advertisement (bisonmq.adv) or advertisement of service (bisonmq.adv_svc):
+    * header: bisonmq.header (type == bisonmq.adv / bisonmq.adv_svc)
+    * address: string; one valid ZeroMQ address (e.g., "tcp://10.0.0.1:6000");
+    * type: string; Type of message/service being advertised
+    * rate: double; Expected rate of message in Hz
+    * fom: int32; Figure of Merit - Lower is better
 
   * subscription (SUB) or subscription to service (SUB\_SVC):
     * HDR (TYPE = 2)
     * (null body)
+
+  * 
 
 ZeroMQ message definitions (for which we will let zeromq handle framing):
 

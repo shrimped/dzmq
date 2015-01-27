@@ -21,6 +21,7 @@ import struct
 import threading
 import signal
 import sys
+import netifaces
 
 from bson import BSON, Binary
 import numpy as np
@@ -30,6 +31,7 @@ ADV_SUB_PORT = 11312
 DZMQ_PORT_KEY = 'DZMQ_BCAST_PORT'
 DZMQ_HOST_KEY = 'DZMQ_BCAST_HOST'
 DZMQ_IP_KEY = 'DZMQ_IP'
+DZMQ_IFACE_KEY = 'DZMQ_IFACE'
 
 # Constants
 OP_ADV = 0x01
@@ -103,12 +105,18 @@ class DZMQ(object):
         # fall back on defaults.
 
         # What IP address will we give to others to use when contacting us?
+        self.ipaddr = None
         if DZMQ_IP_KEY in os.environ:
             self.ipaddr = os.environ[DZMQ_IP_KEY]
-        else:
+        elif DZMQ_IFACE_KEY in os.environ:
+            addrs = get_local_addresses(ifaces=[os.environ[DZMQ_IFACE_KEY]])
+            if addrs:
+                self.ipaddr = addrs[0]
+        if not self.ipaddr:
             # Try to find a non-loopback interface and then compute a broadcast
             # address from it.
             addrs = get_local_addresses()
+            print(addrs)
             non_local_addrs = [x for x in addrs if not x.startswith('127')]
             if len(non_local_addrs) == 0:
                 # Oh, well.
@@ -142,7 +150,12 @@ class DZMQ(object):
         if platform.system() in ['Darwin']:
             self.bcast_recv.setsockopt(socket.SOL_SOCKET,
                                        socket.SO_REUSEPORT, 1)
-        self.bcast_recv.bind((self.bcast_host, self.bcast_port))
+        try:
+            self.bcast_recv.bind((self.bcast_host, self.bcast_port))
+            print("Opened (%s, %s)" % (self.bcast_host, self.bcast_port))
+        except Exception:
+            print("Could not open (%s, %s)" % (self.bcast_host, self.bcast_port))
+            raise
         # Set up to send broadcasts
         self.bcast_send = socket.socket(socket.AF_INET,  # Internet
                                         socket.SOCK_DGRAM)  # UDP
@@ -408,6 +421,7 @@ class DZMQ(object):
         # Process the events
         for e in events:
             # Is it the broadcast socket, which we manage?
+            # Todo: handle heartbeat/status checks
             if e[0] == self.bcast_recv.fileno():
                 # Assume that we get the whole message in one go
                 self._handle_adv_sub(self.bcast_recv.recvfrom(UDP_MAX_SIZE))
@@ -434,7 +448,7 @@ class DZMQ(object):
 _local_addrs = None
 
 
-def get_local_addresses(use_ipv6=False):
+def get_local_addresses(use_ipv6=False, ifaces=None):
     """
     :returns: known local addresses. Not affected by ROS_IP/ROS_HOSTNAME,
 ``[str]``
@@ -445,13 +459,13 @@ def get_local_addresses(use_ipv6=False):
         return _local_addrs
 
     local_addrs = None
-    import platform
+    ifaces = ifaces or netifaces.interfaces()
+
     if platform.system() in ['Linux', 'FreeBSD', 'Darwin']:
         # unix-only branch
         v4addrs = []
         v6addrs = []
-        import netifaces
-        for iface in netifaces.interfaces():
+        for iface in ifaces:
             try:
                 ifaddrs = netifaces.ifaddresses(iface)
             except ValueError:
