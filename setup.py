@@ -9,7 +9,7 @@ config = {
     'url': 'https://bitbucket.org/blink1073/aimq',
     'author_email': 'donald.venable@us.af.mil',
     'version': '0.1',
-    'install_requires': ['nose', 'pyzmq', 'netifaces'],
+    'install_requires': ['nose', 'pyzmq', 'netifaces', 'pymongo'],
     'packages': ['pybsonmq'],
     'scripts': [],
     'name': 'pybsonmq'
