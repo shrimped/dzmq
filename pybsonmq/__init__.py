@@ -1,1 +1,1 @@
-from disc_zmq import DZMQ
+from core import DZMQ
