@@ -82,8 +82,8 @@ class DZMQ(object):
     This class provides a basic pub/sub system with discovery.  Basic
     publisher:
 
-    import disc_zmq
-    d = disc_zmq.DZMQ()
+    import pybisonmq
+    d = pybisonmq.DZMQ()
     d.advertise('foo')
     msg = 'bar'
     while True:
@@ -93,8 +93,8 @@ class DZMQ(object):
     Basic subscriber:
 
     from __future__ import print_function
-    import disc_zmq
-    d = disc_zmq.DZMQ()
+    import pybisonmq
+    d = pybisonmq.DZMQ()
     d.subscribe('foo', lambda topic,msg: print('Got %s on %s'%(topic,msg)))
     d.spin()
 
