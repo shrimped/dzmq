@@ -1,40 +1,25 @@
-
+from .. import DZMQ
 import time
-import multiprocessing
 
 
-def pub_server():
-    from .. import DZMQ
-    time.sleep(1.)
-    pub = DZMQ()
-    time.sleep(1.)
-    pub.advertise('what_what')
-    with open('log.txt', 'w') as fid:
-        fid.write('%s\n' % pub.pub_socket_addrs)
-    while 1:
-        pub.publish('what_what', {'foo': 'bar'})
-        time.sleep(0.1)
+class TestPubSub(object):
 
+    def setup(self):
+        self.pub = DZMQ()
+        self.sub = DZMQ()
 
-def test_simple():
+    def test_basic(self):
+        self.pub.advertise('what_what')
+        time.sleep(1.0)
 
-    proc = multiprocessing.Process(target=pub_server)
-    proc.start()
+        def cb(topic, msg):
+            assert topic == 'what_what'
+            raise  # TODO: use logging here
 
-    from .. import DZMQ
-    sub = DZMQ()
+        self.sub.subscribe('what_what', cb)
+        self.sub.spinOnce()
 
-    def cb(topic, msg):
-        assert topic == 'what_what'
-        raise
+        self.pub.publish('what_what', {'foo': 'bar'})
+        time.sleep(1.)
 
-    time.sleep(1.)
-    sub.spinOnce()
-    sub.subscribe('what_what', cb)
-    time.sleep(0.5)
-    sub.spinOnce()
-    time.sleep(0.5)
-    sub.spinOnce()
-    time.sleep(0.5)
-    sub.spinOnce()
-    raise ValueError
+        self.sub.spinOnce()
