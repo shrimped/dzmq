@@ -16,6 +16,7 @@ import socket
 import zmq
 import uuid
 import os
+import logging
 import platform
 import struct
 import threading
@@ -25,6 +26,9 @@ import netifaces
 
 from bson import BSON, Binary
 import numpy as np
+
+from .utils import get_log
+
 
 # Defaults and overrides
 ADV_SUB_PORT = 11312
@@ -43,9 +47,7 @@ VERSION = 0x0001
 TOPIC_MAXLENGTH = 192
 FLAGS_LENGTH = 16
 ADDRESS_MAXLENGTH = 267
-
-# We want this called once per process
-GUID = uuid.uuid1()
+DEBUG = True
 
 
 def from_bson(data):
@@ -71,7 +73,7 @@ def to_bson(obj):
                             data=Binary(value.tobytes()))
         elif isinstance(value, dict):  # Make sure we recurse into sub-dicts
             obj[key] = to_bson(value)
-    return BSON().encode(obj)
+    return BSON.encode(obj)
 
 
 class DZMQ(object):
@@ -98,8 +100,13 @@ class DZMQ(object):
 
     """
 
-    def __init__(self, context=None):
+    def __init__(self, context=None, log=None):
         self.context = context or zmq.Context.instance()
+        self.log = log or get_log()
+        self.guid = uuid.uuid4()
+
+        if DEBUG:
+            self.log.setLevel(logging.DEBUG)
 
         # Determine network addresses.  Look at environment variables, and
         # fall back on defaults.
@@ -116,7 +123,7 @@ class DZMQ(object):
             # Try to find a non-loopback interface and then compute a broadcast
             # address from it.
             addrs = get_local_addresses()
-            print(addrs)
+            self.log.info(addrs)
             non_local_addrs = [x for x in addrs if not x.startswith('127')]
             if len(non_local_addrs) == 0:
                 # Oh, well.
@@ -152,9 +159,11 @@ class DZMQ(object):
                                        socket.SO_REUSEPORT, 1)
         try:
             self.bcast_recv.bind((self.bcast_host, self.bcast_port))
-            print("Opened (%s, %s)" % (self.bcast_host, self.bcast_port))
+            self.log.info("Opened (%s, %s)" %
+                          (self.bcast_host, self.bcast_port))
         except Exception:
-            print("Could not open (%s, %s)" % (self.bcast_host, self.bcast_port))
+            self.log.error("Could not open (%s, %s)" %
+                           (self.bcast_host, self.bcast_port))
             raise
         # Set up to send broadcasts
         self.bcast_send = socket.socket(socket.AF_INET,  # Internet
@@ -181,7 +190,9 @@ class DZMQ(object):
             raise Exception('TCP address length %d exceeds maximum %d'
                             % (len(tcp_addr), ADDRESS_MAXLENGTH))
         self.pub_socket_addrs.append(tcp_addr)
+        self.pub_socket.setsockopt(zmq.LINGER, 0)
         self.sub_socket = self.context.socket(zmq.SUB)
+        self.sub_socket.setsockopt(zmq.LINGER, 0)
         self.sub_socket_addrs = []
 
         self.poller.register(self.bcast_recv, zmq.POLLIN)
@@ -201,7 +212,7 @@ class DZMQ(object):
         # TODO: pack the GUID more efficiently; should only need one call to
         # struct.pack()
         for i in range(0, GUID_LENGTH):
-            msg += struct.pack('<B', (GUID.int >> i * 8) & 0xFF)
+            msg += struct.pack('<B', (self.guid.int >> i * 8) & 0xFF)
         msg += struct.pack('<B', len(publisher['topic']))
         msg += publisher['topic']
         msg += struct.pack('<B', OP_ADV)
@@ -243,7 +254,7 @@ class DZMQ(object):
         adv = {}
         adv['topic'] = topic
         adv['address'] = inproc_addr
-        adv['guid'] = GUID
+        adv['guid'] = self.guid
         for sub in self.subscribers:
             if sub['topic'] == topic:
                 self._connect_subscriber(adv)
@@ -260,7 +271,7 @@ class DZMQ(object):
         # TODO: pack the GUID more efficiently; should only need one call to
         # struct.pack()
         for i in range(0, GUID_LENGTH):
-            msg += struct.pack('<B', (GUID.int >> i * 8) & 0xFF)
+            msg += struct.pack('<B', (self.guid.int >> i * 8) & 0xFF)
         msg += struct.pack('<B', len(subscriber['topic']))
         msg += subscriber['topic']
         msg += struct.pack('<B', OP_SUB)
@@ -286,7 +297,7 @@ class DZMQ(object):
         adv = {}
         adv['topic'] = subscriber['topic']
         adv['address'] = 'inproc://%s' % subscriber['topic']
-        adv['guid'] = GUID
+        adv['guid'] = self.guid
         for pub in self.publishers:
             if pub['topic'] == subscriber['topic']:
                 self._connect_subscriber(adv)
@@ -315,8 +326,8 @@ class DZMQ(object):
             offset = 0
             version = struct.unpack_from('<H', data, offset)[0]
             if version != VERSION:
-                print('Warning: mismatched protocol versions: %d != %d'
-                      % (version, VERSION))
+                self.log.warn('Warning: mismatched protocol versions: %d != %d'
+                              % (version, VERSION))
             offset += 2
             guid_int = 0
             for i in range(0, GUID_LENGTH):
@@ -346,7 +357,6 @@ class DZMQ(object):
                 # Are we interested in this topic?
                 if [s for s in self.subscribers if s['topic'] == adv['topic']]:
                     # Yes, we're interested; make a connection
-                    print('connect yo', adv)
                     self._connect_subscriber(adv)
 
             elif op == OP_SUB:
@@ -357,11 +367,11 @@ class DZMQ(object):
                  if p['topic'] == topic]
 
             else:
-                print('Warning: got unrecognized OP: %d' % op)
+                self.log.warn('Warning: got unrecognized OP: %d' % op)
 
         except Exception as e:
-            print('Warning: exception while processing SUB or ADV message: %s'
-                  % e)
+            self.log.warn('Warning: exception while processing SUB or ADV '
+                          'message: %s' % e)
 
     def _connect_subscriber(self, adv):
         """
@@ -372,16 +382,16 @@ class DZMQ(object):
         # we'd like to use an 'inproc://' address.  Otherwise, fall back on
         # 'tcp://'.
         if adv['address'].startswith('tcp'):
-            if adv['guid'] == GUID:
+            if adv['guid'] == self.guid:
                 # Us; skip it
                 return
         elif adv['address'].startswith('inproc'):
-            if adv['guid'] != GUID:
+            if adv['guid'] != self.guid:
                 # Not us; skip it
                 return
         else:
-            print('Warning: ingoring unknown address type: %s' %
-                  (adv['address']))
+            self.log.warn('Warning: ingoring unknown address type: %s' %
+                          (adv['address']))
             return
 
         # Are we already connected to this publisher for this topic?
@@ -397,9 +407,8 @@ class DZMQ(object):
         conn['socket'].setsockopt(zmq.SUBSCRIBE, adv['topic'])
         self.sub_connections.append(conn)
         conn['socket'].connect(adv['address'])
-        print('Connected to %s for %s (%s != %s)' % (adv['address'],
-                                                     adv['topic'],
-                                                     adv['guid'], GUID))
+        self.log.info('Connected to %s for %s (%s != %s)' %
+                      (adv['address'], adv['topic'], adv['guid'], self.guid))
 
     def _advertisement_repeater(self):
         [self._advertise(p) for p in self.publishers]
@@ -427,18 +436,16 @@ class DZMQ(object):
             # Todo: handle heartbeat/status checks
             if e[0] == self.bcast_recv.fileno():
                 # Assume that we get the whole message in one go
-                print('broadcast here')
                 self._handle_adv_sub(self.bcast_recv.recvfrom(UDP_MAX_SIZE))
             else:
-                print('I am in this spot')
                 # Must be a zmq socket
                 sock = e[0]
                 # Get the message (assuming that we get it all in one read)
                 topic, msg = sock.recv_multipart()
-                print('Got something')
+                self.log.debug('Got message: %s' % topic)
                 # Invoke all the callbacks registered for this topic.
-                [s['cb'](topic, from_bson(msg)) for s in self.subscribers if s['topic']
-                 == topic]
+                [s['cb'](topic, from_bson(msg)) for s in self.subscribers
+                 if s['topic'] == topic]
 
     def spin(self):
         """
@@ -466,35 +473,25 @@ def get_local_addresses(use_ipv6=False, ifaces=None):
     local_addrs = None
     ifaces = ifaces or netifaces.interfaces()
 
-    if platform.system() in ['Linux', 'FreeBSD', 'Darwin']:
-        # unix-only branch
-        v4addrs = []
-        v6addrs = []
-        for iface in ifaces:
-            try:
-                ifaddrs = netifaces.ifaddresses(iface)
-            except ValueError:
-                # even if interfaces() returns an interface name
-                # ifaddresses() might raise a ValueError
-                # https://bugs.launchpad.net/ubuntu/+source/netifaces/+bug/753009
-                continue
-            if socket.AF_INET in ifaddrs:
-                v4addrs.extend([addr['addr']
-                                for addr in ifaddrs[socket.AF_INET]])
-            if socket.AF_INET6 in ifaddrs:
-                v6addrs.extend([addr['addr']
-                                for addr in ifaddrs[socket.AF_INET6]])
-        if use_ipv6:
-            local_addrs = v6addrs + v4addrs
-        else:
-            local_addrs = v4addrs
+    v4addrs = []
+    v6addrs = []
+    for iface in ifaces:
+        try:
+            ifaddrs = netifaces.ifaddresses(iface)
+        except ValueError:
+            # even if interfaces() returns an interface name
+            # ifaddresses() might raise a ValueError
+            # https://bugs.launchpad.net/ubuntu/+source/netifaces/+bug/753009
+            continue
+        if socket.AF_INET in ifaddrs:
+            v4addrs.extend([addr['addr']
+                            for addr in ifaddrs[socket.AF_INET]])
+        if socket.AF_INET6 in ifaddrs:
+            v6addrs.extend([addr['addr']
+                            for addr in ifaddrs[socket.AF_INET6]])
+    if use_ipv6:
+        local_addrs = v6addrs + v4addrs
     else:
-        # cross-platform branch, can only resolve one address
-        if use_ipv6:
-            local_addrs = [host[4][0] for host in socket.getaddrinfo(
-                socket.gethostname(), 0, 0, 0, socket.SOL_TCP)]
-        else:
-            local_addrs = [host[4][0] for host in socket.getaddrinfo(
-                socket.gethostname(), 0, socket.AF_INET, 0, socket.SOL_TCP)]
+        local_addrs = v4addrs
     _local_addrs = local_addrs
     return local_addrs
