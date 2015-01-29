@@ -25,7 +25,10 @@ import sys
 import netifaces
 
 from bson import BSON, Binary
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    np = None
 
 from .utils import get_log
 
@@ -54,7 +57,8 @@ def from_bson(data):
     def unpack(obj):
         for (key, value) in obj.items():
             if isinstance(value, dict):
-                if 'shape' in value and 'dtype' in value and 'data' in value:
+                if ('shape' in value and 'dtype' in value and 'data' in value
+                        and np):
                     obj[key] = np.frombuffer(value['data'],
                                              dtype=value['dtype'])
                     obj[key] = obj[key].reshape(value['shape'])
@@ -67,7 +71,7 @@ def from_bson(data):
 
 def to_bson(obj):
     for (key, value) in obj.items():
-        if isinstance(value, np.ndarray):
+        if np and isinstance(value, np.ndarray):
             obj[key] = dict(shape=value.shape,
                             dtype=value.dtype.str,
                             data=Binary(value.tobytes()))
@@ -104,6 +108,7 @@ class DZMQ(object):
         self.context = context or zmq.Context.instance()
         self.log = log or get_log()
         self.guid = uuid.uuid4()
+        self.closed = False
 
         if DEBUG:
             self.log.setLevel(logging.DEBUG)
@@ -260,7 +265,7 @@ class DZMQ(object):
                 self._connect_subscriber(adv)
 
     def unadvertise(self, topic):
-        raise Exception("unadvertise not implemented")
+        self.publishers = [p for p in self.publishers if p['topic'] != topic]
 
     def _subscribe(self, subscriber):
         """
@@ -281,7 +286,7 @@ class DZMQ(object):
         # Null body
         self.bcast_send.sendto(msg, (self.bcast_host, self.bcast_port))
 
-    def subscribe(self, topic, cb):
+    def subscribe(self, topic, cb, raw=False):
         """
         Subscribe to the given topic.  Received messages will be passed to
         given the callback, which should have the signature: cb(topic, msg).
@@ -290,6 +295,7 @@ class DZMQ(object):
         subscriber = {}
         subscriber['topic'] = topic
         subscriber['cb'] = cb
+        subscriber['raw'] = raw
         self.subscribers.append(subscriber)
         self._subscribe(subscriber)
 
@@ -303,7 +309,7 @@ class DZMQ(object):
                 self._connect_subscriber(adv)
 
     def unsubscribe(self, topic):
-        raise Exception("unsubscribe not implemented")
+        self.subscribers = [s for s in self.subscribers if s['topic'] != topic]
 
     def publish(self, topic, msg):
         """
@@ -312,8 +318,6 @@ class DZMQ(object):
         """
         if [p for p in self.publishers if p['topic'] == topic]:
             msg = to_bson(msg)
-            with open('log.txt', 'a') as fid:
-                fid.write('Sending\n')
             self.pub_socket.send_multipart((topic, msg))
 
     def _handle_adv_sub(self, msg):
@@ -411,6 +415,8 @@ class DZMQ(object):
                       (adv['address'], adv['topic'], adv['guid'], self.guid))
 
     def _advertisement_repeater(self):
+        if self.closed:
+            return
         [self._advertise(p) for p in self.publishers]
         self.adv_timer = threading.Timer(
             ADV_REPEAT_PERIOD, self._advertisement_repeater)
@@ -442,10 +448,17 @@ class DZMQ(object):
                 sock = e[0]
                 # Get the message (assuming that we get it all in one read)
                 topic, msg = sock.recv_multipart()
-                self.log.debug('Got message: %s' % topic)
-                # Invoke all the callbacks registered for this topic.
-                [s['cb'](topic, from_bson(msg)) for s in self.subscribers
-                 if s['topic'] == topic]
+                raw_subs = [s for s in self.subscribers
+                            if s['topic'] == topic and s['raw']]
+                if raw_subs:
+                    [s['cb'](topic, msg) for s in raw_subs]
+                other_subs = [s for s in self.subscribers
+                              if s['topic'] == topic and not s['raw']]
+                if other_subs:
+                    msg = from_bson(msg)
+                    [s['cb'](topic, msg) for s in other_subs]
+                if raw_subs or other_subs:
+                    self.log.debug('Got message: %s' % topic)
 
     def spin(self):
         """
@@ -453,6 +466,13 @@ class DZMQ(object):
         """
         while True:
             self.spinOnce(0.01)
+
+    def close(self):
+        self.closed = True
+        self.bcast_recv.close()
+        self.bcast_send.close()
+        self.pub_socket.close()
+        self.sub_socket.close()
 
 # Stolen from rosgraph
 # https://github.com/ros/ros_comm/blob/hydro-devel/tools/rosgraph/src/rosgraph/network.py
