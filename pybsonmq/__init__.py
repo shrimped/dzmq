@@ -1,1 +1,1 @@
-from core import DZMQ
+from .core import DZMQ

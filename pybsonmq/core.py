@@ -212,14 +212,14 @@ class DZMQ(object):
         """
         Internal method to pack and broadcast ADV message.
         """
-        msg = ''
+        msg = b''
         msg += struct.pack('<H', VERSION)
         # TODO: pack the GUID more efficiently; should only need one call to
         # struct.pack()
         for i in range(0, GUID_LENGTH):
             msg += struct.pack('<B', (self.guid.int >> i * 8) & 0xFF)
         msg += struct.pack('<B', len(publisher['topic']))
-        msg += publisher['topic']
+        msg += publisher['topic'].encode('utf-8')
         msg += struct.pack('<B', OP_ADV)
         # Flags unused for now
         flags = [0x00] * FLAGS_LENGTH
@@ -232,7 +232,7 @@ class DZMQ(object):
             # Struct objects copy by value
             mymsg = msg
             mymsg += struct.pack('<H', len(addr))
-            mymsg += addr
+            mymsg += addr.encode('utf-8')
             self.bcast_send.sendto(mymsg, (self.bcast_host, self.bcast_port))
 
     def advertise(self, topic):
@@ -271,14 +271,14 @@ class DZMQ(object):
         """
         Internal method to pack and broadcast SUB message.
         """
-        msg = ''
+        msg = b''
         msg += struct.pack('<H', VERSION)
         # TODO: pack the GUID more efficiently; should only need one call to
         # struct.pack()
         for i in range(0, GUID_LENGTH):
             msg += struct.pack('<B', (self.guid.int >> i * 8) & 0xFF)
         msg += struct.pack('<B', len(subscriber['topic']))
-        msg += subscriber['topic']
+        msg += subscriber['topic'].encode('utf-8')
         msg += struct.pack('<B', OP_SUB)
         # Flags unused for now
         flags = [0x00] * FLAGS_LENGTH
@@ -318,7 +318,7 @@ class DZMQ(object):
         """
         if [p for p in self.publishers if p['topic'] == topic]:
             msg = to_bson(msg)
-            self.pub_socket.send_multipart((topic, msg))
+            self.pub_socket.send_multipart((topic.encode('utf-8'), msg))
 
     def _handle_adv_sub(self, msg):
         """
@@ -340,7 +340,7 @@ class DZMQ(object):
             guid = uuid.UUID(int=guid_int)
             topiclength = struct.unpack_from('<B', data, offset)[0]
             offset += 1
-            topic = data[offset:offset + topiclength]
+            topic = data[offset:offset + topiclength].decode('utf-8')
             offset += topiclength
             op = struct.unpack_from('<B', data, offset)[0]
             offset += 1
@@ -355,7 +355,8 @@ class DZMQ(object):
                 adv['flags'] = flags
                 addresslength = struct.unpack_from('<H', data, offset)[0]
                 offset += 2
-                adv['address'] = data[offset:offset + addresslength]
+                addr = data[offset:offset + addresslength]
+                adv['address'] = addr.decode('utf-8')
                 offset += addresslength
 
                 # Are we interested in this topic?
@@ -374,6 +375,7 @@ class DZMQ(object):
                 self.log.warn('Warning: got unrecognized OP: %d' % op)
 
         except Exception as e:
+            self.log.exception(e)
             self.log.warn('Warning: exception while processing SUB or ADV '
                           'message: %s' % e)
 
@@ -408,7 +410,7 @@ class DZMQ(object):
         conn['topic'] = adv['topic']
         conn['address'] = adv['address']
         conn['guid'] = adv['guid']
-        conn['socket'].setsockopt(zmq.SUBSCRIBE, adv['topic'])
+        conn['socket'].setsockopt(zmq.SUBSCRIBE, adv['topic'].encode('utf-8'))
         self.sub_connections.append(conn)
         conn['socket'].connect(adv['address'])
         self.log.info('Connected to %s for %s (%s != %s)' %
@@ -448,6 +450,7 @@ class DZMQ(object):
                 sock = e[0]
                 # Get the message (assuming that we get it all in one read)
                 topic, msg = sock.recv_multipart()
+                topic = topic.decode('utf-8')
                 raw_subs = [s for s in self.subscribers
                             if s['topic'] == topic and s['raw']]
                 if raw_subs:
