@@ -177,7 +177,7 @@ class TestPubSub(object):
     def test_raw_sub(self):
         self.pub.advertise('what_what')
         time.sleep(0.1)
-        payload = {'foo': 'bar'}
+        payload = {'foo': 'bar', 'bar': {'baz': [1, 2, 3]}}
 
         def cb(topic, msg):
             assert topic == 'what_what'
