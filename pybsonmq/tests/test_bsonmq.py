@@ -33,7 +33,7 @@ class TestPubSub(object):
 
     def test_basic(self):
         self.pub.advertise('what_what')
-        time.sleep(1.0)
+        time.sleep(0.1)
         payload = {'foo': 'bar'}
 
         def cb(topic, msg):
@@ -43,8 +43,9 @@ class TestPubSub(object):
         self.sub.subscribe('what_what', cb)
         self.sub.spinOnce()
 
+        time.sleep(0.1)
         self.pub.publish('what_what', payload)
-        time.sleep(1.)
+        time.sleep(0.1)
         self.sub.spinOnce()
 
         # check the output
@@ -57,7 +58,7 @@ class TestPubSub(object):
         self.pub.advertise('boo_boo')
         payload = {'spam': 100}
 
-        time.sleep(1.0)
+        time.sleep(0.1)
 
         def cb(topic, msg):
             assert topic == 'hey_hey'
@@ -66,8 +67,9 @@ class TestPubSub(object):
         self.sub.subscribe('hey_hey', cb)
         self.sub.spinOnce()
 
+        time.sleep(0.1)
         self.pub.publish('hey_hey', payload)
-        time.sleep(1.)
+        time.sleep(0.1)
         self.pub.publish('boo_boo', payload)
         self.sub.spinOnce()
 
@@ -83,7 +85,7 @@ class TestPubSub(object):
         else:
             payload = {'eggs': [1, 2, 3]}
 
-        time.sleep(1.0)
+        time.sleep(0.1)
 
         def cb1(topic, msg):
             assert topic == 'yeah_yeah'
@@ -99,8 +101,9 @@ class TestPubSub(object):
         self.sub.subscribe('yeah_yeah', cb2)
         self.sub.spinOnce()
 
+        time.sleep(0.1)
         self.pub.publish('yeah_yeah', payload)
-        time.sleep(1.)
+        time.sleep(0.1)
         self.sub.spinOnce()
 
         # check the output
@@ -114,7 +117,7 @@ class TestPubSub(object):
         self.pub.advertise('yeah_yeah')
         payload = {'spam': 100}
 
-        time.sleep(1.0)
+        time.sleep(0.1)
 
         def cb(topic, msg):
             assert False
@@ -124,8 +127,9 @@ class TestPubSub(object):
 
         self.sub.spinOnce()
 
+        time.sleep(0.1)
         self.pub.publish('yeah_yeah', payload)
-        time.sleep(1.)
+        time.sleep(0.1)
         self.sub.spinOnce()
 
         # check the output
@@ -137,7 +141,7 @@ class TestPubSub(object):
         self.pub.advertise('yeah_yeah')
         payload = {'spam': 100}
 
-        time.sleep(1.0)
+        time.sleep(0.1)
 
         def cb(topic, msg):
             assert topic == 'yeah_yeah'
@@ -147,8 +151,9 @@ class TestPubSub(object):
 
         self.sub.spinOnce()
 
+        time.sleep(0.1)
         self.pub.publish('yeah_yeah', payload)
-        time.sleep(1.)
+        time.sleep(0.1)
         self.sub.spinOnce()
 
         # check the output
@@ -160,8 +165,9 @@ class TestPubSub(object):
 
         self.sub.spinOnce()
 
+        time.sleep(0.1)
         self.pub.publish('yeah_yeah', payload)
-        time.sleep(1.)
+        time.sleep(0.1)
         self.sub.spinOnce()
 
         # check the output
@@ -170,7 +176,7 @@ class TestPubSub(object):
 
     def test_raw_sub(self):
         self.pub.advertise('what_what')
-        time.sleep(1.0)
+        time.sleep(0.1)
         payload = {'foo': 'bar'}
 
         def cb(topic, msg):
@@ -180,8 +186,9 @@ class TestPubSub(object):
         self.sub.subscribe('what_what', cb, raw=True)
         self.sub.spinOnce()
 
+        time.sleep(0.1)
         self.pub.publish('what_what', payload)
-        time.sleep(1.)
+        time.sleep(0.1)
         self.sub.spinOnce()
 
         # check the output
