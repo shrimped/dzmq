@@ -35,6 +35,7 @@ from .utils import get_log
 
 # Defaults and overrides
 ADV_SUB_PORT = 11312
+MULTICAST_GRP = '224.1.1.1'
 DZMQ_PORT_KEY = 'DZMQ_BCAST_PORT'
 DZMQ_HOST_KEY = 'DZMQ_BCAST_HOST'
 DZMQ_IP_KEY = 'DZMQ_IP'
@@ -117,25 +118,26 @@ class DZMQ(object):
         # fall back on defaults.
 
         # What IP address will we give to others to use when contacting us?
-        self.ipaddr = None
+        addrs = []
         if DZMQ_IP_KEY in os.environ:
-            self.ipaddr = os.environ[DZMQ_IP_KEY]
+            addrs = get_local_addresses(addrs=[os.environ[DZMQ_IP_KEY]])
         elif DZMQ_IFACE_KEY in os.environ:
             addrs = get_local_addresses(ifaces=[os.environ[DZMQ_IFACE_KEY]])
-            if addrs:
-                self.ipaddr = addrs[0]
-        if not self.ipaddr:
-            # Try to find a non-loopback interface and then compute a broadcast
-            # address from it.
+        if not addrs:
             addrs = get_local_addresses()
-            self.log.info(addrs)
-            non_local_addrs = [x for x in addrs if not x.startswith('127')]
-            if len(non_local_addrs) == 0:
-                # Oh, well.
-                self.ipaddr = addrs[0]
+        if addrs:
+            self.ipaddr = addrs[0]['addr']
+            self.bcast_host = addrs[0]['broadcast']
+        else:
+            if sys.platform == 'win32':
+                self.ipaddr = '127.0.0.1'
+                self.bcast_host = '255.255.255.255'
+            elif sys.platform == 'linux':
+                self.ipaddr = '127.0.0.255'
+                self.bcast_host = '127.0.0.255'
             else:
-                # Take the first non-local one.
-                self.ipaddr = non_local_addrs[0]
+                self.ipaddr = '127.0.0.255'
+                self.bcast_host = MULTICAST_GRP
 
         # What's our broadcast port?
         if DZMQ_PORT_KEY in os.environ:
@@ -147,33 +149,33 @@ class DZMQ(object):
         if DZMQ_HOST_KEY in os.environ:
             self.bcast_host = os.environ[DZMQ_HOST_KEY]
         else:
-            # TODO: consider computing a more specific broadcast address based
-            # on the result of get_local_addresses()
-            # The following line isn't correct because it doesn't take account
-            # of the netmask, but it allows the code to run without sudo
-            # on OSX.
-            self.bcast_host = '.'.join(self.ipaddr.split('.')[:-1] + ['255'])
+            pass
 
         # Set up to listen to broadcasts
         self.bcast_recv = socket.socket(socket.AF_INET,  # Internet
-                                        socket.SOCK_DGRAM)  # UDP
+                                        socket.SOCK_DGRAM,  # UDP
+                                        socket.IPPROTO_UDP)
         self.bcast_recv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
         if platform.system() in ['Darwin']:
             self.bcast_recv.setsockopt(socket.SOL_SOCKET,
                                        socket.SO_REUSEPORT, 1)
+
         try:
-            self.bcast_recv.bind((self.bcast_host, self.bcast_port))
-            self.log.info("Opened (%s, %s)" %
-                          (self.bcast_host, self.bcast_port))
+            self._start_bcast_recv()
         except Exception:
             self.log.error("Could not open (%s, %s)" %
                            (self.bcast_host, self.bcast_port))
             raise
+
         # Set up to send broadcasts
         self.bcast_send = socket.socket(socket.AF_INET,  # Internet
-                                        socket.SOCK_DGRAM)  # UDP
+                                        socket.SOCK_DGRAM,  # UDP
+                                        socket.IPPROTO_UDP)
         self.bcast_send.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        if self.bcast_host == MULTICAST_GRP:
+            self.bcast_send.setsockopt(socket.IPPROTO_IP,
+                                       socket.IP_MULTICAST_TTL, 2)
 
         # Bookkeeping (which should be cleaned up)
         self.publishers = []
@@ -203,6 +205,21 @@ class DZMQ(object):
         self.poller.register(self.bcast_recv, zmq.POLLIN)
         self.poller.register(self.pub_socket, zmq.POLLIN)
         self.poller.register(self.sub_socket, zmq.POLLIN)
+
+    def _start_bcast_recv(self):
+        if self.bcast_host == MULTICAST_GRP:
+            self.bcast_recv.bind(('', self.bcast_port))
+            mreq = struct.pack("4sl", socket.inet_aton(MULTICAST_GRP),
+                               socket.INADDR_ANY)
+            self.log.debug(self.bcast_port)
+            self.log.debug(mreq)
+            self.bcast_recv.setsockopt(socket.IPPROTO_IP,
+                                       socket.IP_ADD_MEMBERSHIP,
+                                       mreq)
+        else:
+            self.bcast_recv.bind((self.bcast_host, self.bcast_port))
+            self.log.info("Opened (%s, %s)" %
+                          (self.bcast_host, self.bcast_port))
 
     def _sighandler(self, sig, frame):
         self.adv_timer.cancel()
@@ -483,7 +500,7 @@ class DZMQ(object):
 _local_addrs = None
 
 
-def get_local_addresses(use_ipv6=False, ifaces=None):
+def get_local_addresses(use_ipv6=False, addrs=None, ifaces=None):
     """
     :returns: known local addresses. Not affected by ROS_IP/ROS_HOSTNAME,
 ``[str]``
@@ -493,7 +510,6 @@ def get_local_addresses(use_ipv6=False, ifaces=None):
     if _local_addrs is not None:
         return _local_addrs
 
-    local_addrs = None
     ifaces = ifaces or netifaces.interfaces()
 
     v4addrs = []
@@ -507,14 +523,18 @@ def get_local_addresses(use_ipv6=False, ifaces=None):
             # https://bugs.launchpad.net/ubuntu/+source/netifaces/+bug/753009
             continue
         if socket.AF_INET in ifaddrs:
-            v4addrs.extend([addr['addr']
-                            for addr in ifaddrs[socket.AF_INET]])
+            v4addrs.extend([addr
+                            for addr in ifaddrs[socket.AF_INET]
+                            if 'broadcast' in addr])
         if socket.AF_INET6 in ifaddrs:
-            v6addrs.extend([addr['addr']
-                            for addr in ifaddrs[socket.AF_INET6]])
+            v6addrs.extend([addr
+                            for addr in ifaddrs[socket.AF_INET6]
+                            if 'broadcast' in addr])
     if use_ipv6:
         local_addrs = v6addrs + v4addrs
     else:
         local_addrs = v4addrs
+    if addrs:
+        local_addrs = [a for a in local_addrs if not a['addr'] in addrs]
     _local_addrs = local_addrs
     return local_addrs
