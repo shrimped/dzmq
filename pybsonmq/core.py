@@ -136,7 +136,7 @@ class DZMQ(object):
                 self.ipaddr = '127.0.0.255'
                 self.bcast_host = '127.0.0.255'
             else:
-                self.ipaddr = '127.0.0.255'
+                self.ipaddr = '127.0.0.1'
                 self.bcast_host = MULTICAST_GRP
 
         # What's our broadcast port?
