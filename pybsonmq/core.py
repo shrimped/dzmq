@@ -23,8 +23,13 @@ import threading
 import signal
 import sys
 import netifaces
+import base64
+import json
+try:
+    from bson import Binary, BSON
+except ImportError:
+    BSON = None
 
-from bson import BSON, Binary
 try:
     import numpy as np
 except ImportError:
@@ -54,31 +59,48 @@ ADDRESS_MAXLENGTH = 267
 DEBUG = True
 
 
-def from_bson(data):
+def unpack_msg(data):
     def unpack(obj):
+        if not BSON:
+            obj = json.loads(obj)
         for (key, value) in obj.items():
             if isinstance(value, dict):
                 if ('shape' in value and 'dtype' in value and 'data' in value
                         and np):
-                    obj[key] = np.frombuffer(value['data'],
-                                             dtype=value['dtype'])
+                    if BSON is None:
+                        value['data'] = base64.b64decode(value['data'])
+                        obj[key] = np.fromstring(value['data'],
+                                                 dtype=value['dtype'])
+                    else:
+                        obj[key] = np.frombuffer(value['data'],
+                                                 dtype=value['dtype'])
                     obj[key] = obj[key].reshape(value['shape'])
                 else:
                     # Make sure to recurse into sub-dicts
                     obj[key] = unpack(value)
         return obj
-    return unpack(BSON(data).decode())
+    if BSON is None:
+        return unpack(data)
+    else:
+        return unpack(BSON(data).decode())
 
 
-def to_bson(obj):
+def pack_msg(obj):
     for (key, value) in obj.items():
         if np and isinstance(value, np.ndarray):
+            if BSON is None:
+                data = base64.b64encode(value.tobytes())
+            else:
+                data = Binary(value.tobytes())
             obj[key] = dict(shape=value.shape,
                             dtype=value.dtype.str,
-                            data=Binary(value.tobytes()))
+                            data=data)
         elif isinstance(value, dict):  # Make sure we recurse into sub-dicts
-            obj[key] = to_bson(value)
-    return BSON.encode(obj)
+            obj[key] = pack_msg(value)
+    if BSON is None:
+        return json.dumps(obj)
+    else:
+        return BSON.encode(obj)
 
 
 class DZMQ(object):
@@ -334,7 +356,7 @@ class DZMQ(object):
         advertise() on the topic first.
         """
         if [p for p in self.publishers if p['topic'] == topic]:
-            msg = to_bson(msg)
+            msg = pack_msg(msg)
             self.pub_socket.send_multipart((topic.encode('utf-8'), msg))
 
     def _handle_adv_sub(self, msg):
@@ -475,7 +497,7 @@ class DZMQ(object):
                 other_subs = [s for s in self.subscribers
                               if s['topic'] == topic and not s['raw']]
                 if other_subs:
-                    msg = from_bson(msg)
+                    msg = unpack_msg(msg)
                     [s['cb'](topic, msg) for s in other_subs]
                 if raw_subs or other_subs:
                     self.log.debug('Got message: %s' % topic)

@@ -1,5 +1,10 @@
 from .. import DZMQ
-from bson import BSON
+try:
+    from bson import BSON
+except ImportError:
+    BSON = None
+    import json
+
 import time
 import logging
 try:
@@ -181,7 +186,10 @@ class TestPubSub(object):
 
         def cb(topic, msg):
             assert topic == 'what_what'
-            assert msg == BSON.encode(payload)
+            if BSON:
+                assert msg == BSON.encode(payload)
+            else:
+                assert msg == json.loads(payload)
 
         self.sub.subscribe('what_what', cb, raw=True)
         self.sub.spinOnce()
