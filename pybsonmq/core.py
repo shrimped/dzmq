@@ -221,9 +221,11 @@ class DZMQ(object):
         tcp_addr = 'tcp://%s' % (self.ipaddr)
         if not tcp_port:
             tcp_port = self.pub_socket.bind_to_random_port(tcp_addr)
+            tcp_addr += ':%d' % (tcp_port)
         else:
+            tcp_addr += ':%d' % tcp_port
             self.pub_socket.bind(tcp_addr)
-        tcp_addr += ':%d' % (tcp_port)
+
         if len(tcp_addr) > ADDRESS_MAXLENGTH:
             raise Exception('TCP address length %d exceeds maximum %d'
                             % (len(tcp_addr), ADDRESS_MAXLENGTH))
