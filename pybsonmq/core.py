@@ -468,8 +468,12 @@ class DZMQ(object):
         conn['address'] = adv['address']
         conn['guid'] = adv['guid']
         conn['socket'].setsockopt(zmq.SUBSCRIBE, adv['topic'].encode('utf-8'))
+
+        if not any([s['address'] == adv['address']
+                    for s in self.sub_connections]):
+            conn['socket'].connect(adv['address'])
+
         self.sub_connections.append(conn)
-        conn['socket'].connect(adv['address'])
         self.log.info('Connected to %s for %s (%s != %s)' %
                       (adv['address'], adv['topic'], adv['guid'], self.guid))
 
