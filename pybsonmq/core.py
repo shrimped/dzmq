@@ -56,7 +56,7 @@ VERSION = 0x0001
 TOPIC_MAXLENGTH = 192
 FLAGS_LENGTH = 16
 ADDRESS_MAXLENGTH = 267
-DEBUG = True
+DEBUG = False
 
 
 def unpack_msg(data):
@@ -236,7 +236,6 @@ class DZMQ(object):
         self.sub_socket_addrs = []
 
         self.poller.register(self.bcast_recv, zmq.POLLIN)
-        self.poller.register(self.pub_socket, zmq.POLLIN)
         self.poller.register(self.sub_socket, zmq.POLLIN)
 
     def _start_bcast_recv(self):
@@ -454,6 +453,14 @@ class DZMQ(object):
         if [c for c in self.sub_connections
                 if c['topic'] == adv['topic'] and c['guid'] == adv['guid']]:
             return
+
+        # Are we already connected to this publisher for this topic 
+        # on this address?
+        for c in self.sub_connections:
+            if c['topic'] == adv['topic'] and c['address'] == adv['address']:
+                c['guid'] == adv['guid']
+                return
+
         # Connect our subscriber socket
         conn = {}
         conn['socket'] = self.sub_socket
@@ -486,34 +493,33 @@ class DZMQ(object):
         else:
             # zmq wants the timeout in milliseconds
             timeout = int(timeout * 1e3)
+
         # Look for sockets that are ready to read
-        events = self.poller.poll(timeout)
-        # Process the events
-        for e in events:
-            # Is it the broadcast socket, which we manage?
-            # Todo: handle heartbeat/status checks
-            if e[0] == self.bcast_recv.fileno():
-                # Assume that we get the whole message in one go
-                self._handle_adv_sub(self.bcast_recv.recvfrom(UDP_MAX_SIZE))
-            else:
-                # Must be a zmq socket
-                sock = e[0]
-                # Get the message (assuming that we get it all in one read)
-                topic, msg = sock.recv_multipart()
-                topic = topic.decode('utf-8')
-                raw_subs = [s for s in self.subscribers
-                            if s['topic'] == topic and s['raw']]
-                if raw_subs:
-                    [s['cb'](topic, msg) for s in raw_subs]
-                other_subs = [s for s in self.subscribers
-                              if s['topic'] == topic and not s['raw']]
-                if other_subs:
-                    msg = unpack_msg(msg)
-                    if len(msg) == 1 and '___payload__' in msg:
-                        msg = msg['___payload__']
-                    [s['cb'](topic, msg) for s in other_subs]
-                if raw_subs or other_subs:
-                    self.log.debug('Got message: %s' % topic)
+        items = dict(self.poller.poll(timeout))
+
+        if items.get(self.bcast_recv.fileno(), None) == zmq.POLLIN:
+            self._handle_adv_sub(self.bcast_recv.recvfrom(UDP_MAX_SIZE))
+
+        if items.get(self.sub_socket, None) == zmq.POLLIN:
+            # Get the message (assuming that we get it all in one read)
+            topic, msg = self.sub_socket.recv_multipart()
+            topic = topic.decode('utf-8')
+
+            raw_subs = [s for s in self.subscribers
+                        if s['topic'] == topic and s['raw']]
+            if raw_subs:
+                [s['cb'](msg) for s in raw_subs]
+
+            other_subs = [s for s in self.subscribers
+                          if s['topic'] == topic and not s['raw']]
+            if other_subs:
+                msg = unpack_msg(msg)
+                if len(msg) == 1 and '___payload__' in msg:
+                    msg = msg['___payload__']
+                [s['cb'](msg) for s in other_subs]
+
+            if raw_subs or other_subs:
+                self.log.debug('Got message: %s' % topic)
 
     def spin(self):
         """
