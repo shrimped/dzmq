@@ -9,12 +9,12 @@ else:
     topic = 'foo'
 
 
-def cb1(topic, msg):
-    print('1: Got %s on %s' % (msg, topic))
+def cb1(msg):
+    print('1: Got %s' % msg)
 
 
-def cb2(topic, msg):
-    print('2: Got %s on %s' % (msg, topic))
+def cb2(msg):
+    print('2: Got %s' % msg)
 
 d = pybsonmq.DZMQ()
 d.subscribe(topic, cb1)

@@ -14,8 +14,8 @@ else:
     msg = 'foobar'
 
 
-def cb(topic, msg):
-    print('Got %s on %s' % (msg, topic))
+def cb(msg):
+    print('Got %s' % msg)
 
 d = pybsonmq.DZMQ()
 d.subscribe(topic, cb)

@@ -41,8 +41,7 @@ class TestPubSub(object):
         time.sleep(0.1)
         payload = {'foo': 'bar'}
 
-        def cb(topic, msg):
-            assert topic == 'what_what'
+        def cb(msg):
             assert msg == payload
 
         self.sub.subscribe('what_what', cb)
@@ -65,8 +64,7 @@ class TestPubSub(object):
 
         time.sleep(0.1)
 
-        def cb(topic, msg):
-            assert topic == 'hey_hey'
+        def cb(msg):
             assert msg == payload
 
         self.sub.subscribe('hey_hey', cb)
@@ -92,13 +90,11 @@ class TestPubSub(object):
 
         time.sleep(0.1)
 
-        def cb1(topic, msg):
-            assert topic == 'yeah_yeah'
+        def cb1(msg):
             self.sub.log.debug('Got cb1')
             assert 'eggs' in msg
 
-        def cb2(topic, msg):
-            assert topic == 'yeah_yeah'
+        def cb2(msg):
             self.sub.log.debug('Got cb2')
             assert 'eggs' in msg
 
@@ -124,7 +120,7 @@ class TestPubSub(object):
 
         time.sleep(0.1)
 
-        def cb(topic, msg):
+        def cb(msg):
             assert False
 
         self.pub.unadvertise('yeah_yeah')
@@ -148,8 +144,7 @@ class TestPubSub(object):
 
         time.sleep(0.1)
 
-        def cb(topic, msg):
-            assert topic == 'yeah_yeah'
+        def cb(msg):
             assert msg == payload
 
         self.sub.subscribe('yeah_yeah', cb)
@@ -184,8 +179,7 @@ class TestPubSub(object):
         time.sleep(0.1)
         payload = {'foo': 'bar', 'bar': {'baz': [1, 2, 3]}}
 
-        def cb(topic, msg):
-            assert topic == 'what_what'
+        def cb(msg):
             if BSON:
                 assert msg == BSON.encode(payload)
             else:
