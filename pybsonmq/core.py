@@ -130,7 +130,7 @@ class DZMQ(object):
 
     """
 
-    def __init__(self, context=None, log=None, tcp_port=None):
+    def __init__(self, context=None, log=None, tcp_port=None, ipaddr=None):
         self.context = context or zmq.Context.instance()
         self.log = log or get_log()
         self.guid = uuid.uuid4()
@@ -163,6 +163,9 @@ class DZMQ(object):
             else:
                 self.ipaddr = '127.0.0.1'
                 self.bcast_host = MULTICAST_GRP
+
+        if ipaddr:
+            self.ipaddr = ipaddr
 
         # What's our broadcast port?
         if DZMQ_PORT_KEY in os.environ:
@@ -219,9 +222,6 @@ class DZMQ(object):
         if not tcp_port:
             tcp_port = self.pub_socket.bind_to_random_port(tcp_addr)
         else:
-            from PyQt4.QtCore import pyqtRemoveInputHook; pyqtRemoveInputHook()
-            import ipdb; ipdb.set_trace()
-            pass
             self.pub_socket.bind(tcp_addr)
         tcp_addr += ':%d' % (tcp_port)
         if len(tcp_addr) > ADDRESS_MAXLENGTH:
@@ -239,10 +239,6 @@ class DZMQ(object):
 
     def _start_bcast_recv(self):
         if self.bcast_host == MULTICAST_GRP:
-            from PyQt4.QtCore import pyqtRemoveInputHook; pyqtRemoveInputHook()
-            import ipdb; ipdb.set_trace()
-            pass
-            
             self.bcast_recv.bind(('', self.bcast_port))
             mreq = struct.pack("4sl", socket.inet_aton(MULTICAST_GRP),
                                socket.INADDR_ANY)
