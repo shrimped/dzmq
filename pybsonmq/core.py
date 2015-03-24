@@ -79,6 +79,7 @@ def unpack_msg(data):
                     # Make sure to recurse into sub-dicts
                     obj[key] = unpack(value)
         return obj
+
     if BSON is None:
         return unpack(data)
     else:
@@ -86,6 +87,8 @@ def unpack_msg(data):
 
 
 def pack_msg(obj):
+    if not isinstance(obj, dict):
+        obj = dict(___payload__=obj)
     for (key, value) in obj.items():
         if np and isinstance(value, np.ndarray):
             if BSON is None:
@@ -127,7 +130,7 @@ class DZMQ(object):
 
     """
 
-    def __init__(self, context=None, log=None):
+    def __init__(self, context=None, log=None, tcp_port=None):
         self.context = context or zmq.Context.instance()
         self.log = log or get_log()
         self.guid = uuid.uuid4()
@@ -154,7 +157,7 @@ class DZMQ(object):
             if sys.platform == 'win32':
                 self.ipaddr = '127.0.0.1'
                 self.bcast_host = '255.255.255.255'
-            elif sys.platform == 'linux':
+            elif 'linux' in sys.platform:
                 self.ipaddr = '127.0.0.255'
                 self.bcast_host = '127.0.0.255'
             else:
@@ -213,7 +216,13 @@ class DZMQ(object):
         self.pub_socket = self.context.socket(zmq.PUB)
         self.pub_socket_addrs = []
         tcp_addr = 'tcp://%s' % (self.ipaddr)
-        tcp_port = self.pub_socket.bind_to_random_port(tcp_addr)
+        if not tcp_port:
+            tcp_port = self.pub_socket.bind_to_random_port(tcp_addr)
+        else:
+            from PyQt4.QtCore import pyqtRemoveInputHook; pyqtRemoveInputHook()
+            import ipdb; ipdb.set_trace()
+            pass
+            self.pub_socket.bind(tcp_addr)
         tcp_addr += ':%d' % (tcp_port)
         if len(tcp_addr) > ADDRESS_MAXLENGTH:
             raise Exception('TCP address length %d exceeds maximum %d'
@@ -230,6 +239,10 @@ class DZMQ(object):
 
     def _start_bcast_recv(self):
         if self.bcast_host == MULTICAST_GRP:
+            from PyQt4.QtCore import pyqtRemoveInputHook; pyqtRemoveInputHook()
+            import ipdb; ipdb.set_trace()
+            pass
+            
             self.bcast_recv.bind(('', self.bcast_port))
             mreq = struct.pack("4sl", socket.inet_aton(MULTICAST_GRP),
                                socket.INADDR_ANY)
@@ -498,6 +511,8 @@ class DZMQ(object):
                               if s['topic'] == topic and not s['raw']]
                 if other_subs:
                     msg = unpack_msg(msg)
+                    if len(msg) == 1 and '___payload__' in msg:
+                        msg = msg['___payload__']
                     [s['cb'](topic, msg) for s in other_subs]
                 if raw_subs or other_subs:
                     self.log.debug('Got message: %s' % topic)

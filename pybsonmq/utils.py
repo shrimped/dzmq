@@ -42,3 +42,6 @@ def _setup_log():
 
     log = get_log()
     log.addHandler(handler)
+
+
+_setup_log()
