@@ -49,6 +49,8 @@ DZMQ_IFACE_KEY = 'DZMQ_IFACE'
 # Constants
 OP_ADV = 0x01
 OP_SUB = 0x02
+OP_SYN = 0x03
+
 UDP_MAX_SIZE = 512
 GUID_LENGTH = 16
 ADV_REPEAT_PERIOD = 1.0
@@ -62,7 +64,7 @@ DEBUG = False
 def unpack_msg(data):
     def unpack(obj):
         if not BSON:
-            obj = json.loads(obj)
+            obj = json.loads(obj.decode('utf-8'))
         for (key, value) in obj.items():
             if isinstance(value, dict):
                 if ('shape' in value and 'dtype' in value and 'data' in value
@@ -101,7 +103,7 @@ def pack_msg(obj):
         elif isinstance(value, dict):  # Make sure we recurse into sub-dicts
             obj[key] = pack_msg(value)
     if BSON is None:
-        return json.dumps(obj)
+        return json.dumps(obj).encode('utf-8')
     else:
         return BSON.encode(obj)
 
@@ -226,6 +228,8 @@ class DZMQ(object):
             tcp_addr += ':%d' % tcp_port
             self.pub_socket.bind(tcp_addr)
 
+        self.tcp_addr = tcp_addr
+
         if len(tcp_addr) > ADDRESS_MAXLENGTH:
             raise Exception('TCP address length %d exceeds maximum %d'
                             % (len(tcp_addr), ADDRESS_MAXLENGTH))
@@ -237,6 +241,8 @@ class DZMQ(object):
 
         self.poller.register(self.bcast_recv, zmq.POLLIN)
         self.poller.register(self.sub_socket, zmq.POLLIN)
+
+        self.listeners = {}
 
     def _start_bcast_recv(self):
         if self.bcast_host == MULTICAST_GRP:
@@ -291,6 +297,8 @@ class DZMQ(object):
         if len(topic) > TOPIC_MAXLENGTH:
             raise Exception('Topic length %d exceeds maximum %d'
                             % (len(topic), TOPIC_MAXLENGTH))
+        if topic not in self.listeners:
+            self.listeners[topic] = set()
         publisher = {}
         publisher['socket'] = self.pub_socket
         inproc_addr = 'inproc://%s' % topic
@@ -333,6 +341,28 @@ class DZMQ(object):
         flags = [0x00] * FLAGS_LENGTH
         msg += struct.pack('<%dB' % FLAGS_LENGTH, *flags)
         # Null body
+        self.bcast_send.sendto(msg, (self.bcast_host, self.bcast_port))
+
+    def _synch(self, adv):
+        """
+        Internal method to pack and broadcast SYN message.
+        """
+        msg = b''
+        msg += struct.pack('<H', VERSION)
+        # TODO: pack the GUID more efficiently; should only need one call to
+        # struct.pack()
+        for i in range(0, GUID_LENGTH):
+            msg += struct.pack('<B', (self.guid.int >> i * 8) & 0xFF)
+        msg += struct.pack('<B', len(adv['topic']))
+        msg += adv['topic'].encode('utf-8')
+        msg += struct.pack('<B', OP_SYN)
+        # Flags unused for now
+        flags = [0x00] * FLAGS_LENGTH
+        msg += struct.pack('<%dB' % FLAGS_LENGTH, *flags)
+        msg += struct.pack('<H', len(adv['address']))
+        msg += adv['address'].encode('utf-8')
+        msg += struct.pack('<H', len(self.tcp_addr))
+        msg += self.tcp_addr.encode('utf-8')
         self.bcast_send.sendto(msg, (self.bcast_host, self.bcast_port))
 
     def subscribe(self, topic, cb, raw=False):
@@ -420,6 +450,20 @@ class DZMQ(object):
                 [self._advertise(p) for p in self.publishers
                  if p['topic'] == topic]
 
+            elif op == OP_SYN:
+                # unpack the SYN body
+                addresslength = struct.unpack_from('<H', data, offset)[0]
+                offset += 2
+                pub_addr = data[offset:offset + addresslength].decode('utf-8')
+                offset += addresslength
+                addresslength = struct.unpack_from('<H', data, offset)[0]
+                offset += 2
+                sub_addr = data[offset:offset + addresslength].decode('utf-8')
+                offset += addresslength
+
+                if pub_addr == self.tcp_addr and not sub_addr == self.tcp_addr:
+                    self.listeners[topic].add(sub_addr)
+
             else:
                 self.log.warn('Warning: got unrecognized OP: %d' % op)
 
@@ -454,11 +498,12 @@ class DZMQ(object):
                 if c['topic'] == adv['topic'] and c['guid'] == adv['guid']]:
             return
 
-        # Are we already connected to this publisher for this topic 
+        # Are we already connected to this publisher for this topic
         # on this address?
         for c in self.sub_connections:
             if c['topic'] == adv['topic'] and c['address'] == adv['address']:
                 c['guid'] == adv['guid']
+                self._synch(adv)
                 return
 
         # Connect our subscriber socket
@@ -476,6 +521,7 @@ class DZMQ(object):
         self.sub_connections.append(conn)
         self.log.info('Connected to %s for %s (%s != %s)' %
                       (adv['address'], adv['topic'], adv['guid'], self.guid))
+        self._synch(adv)
 
     def _advertisement_repeater(self):
         if self.closed:
