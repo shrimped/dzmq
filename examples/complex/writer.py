@@ -4,7 +4,7 @@ import pybsonmq
 import time
 
 
-d = pybsonmq.DZMQ(tcp_port=55555, ipaddr='127.0.0.255')
+d = pybsonmq.DZMQ(tcp_port=55555, ipaddr='127.0.0.1')
 d.advertise('status')
 
 
@@ -24,9 +24,6 @@ def write_log_data(msg):
 
 d.subscribe('sensor_data', write_sensor_data)
 d.subscribe('log', write_log_data)
-
-
-time.sleep(1.0)
 
 tlast = time.time()
 while True:
