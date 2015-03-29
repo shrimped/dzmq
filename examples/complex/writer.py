@@ -2,9 +2,13 @@
 from __future__ import print_function
 import pybsonmq
 import time
+import sys
 
+if 'linux' in sys.platform:
+    d = pybsonmq.DZMQ(address='ipc:///tmp/writer')
+else:
+    d = pybsonmq.DZMQ()
 
-d = pybsonmq.DZMQ(tcp_port=55555, ipaddr='127.0.0.1')
 d.advertise('status')
 
 

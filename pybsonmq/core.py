@@ -54,6 +54,8 @@ OP_SYN = 0x03
 UDP_MAX_SIZE = 512
 GUID_LENGTH = 16
 ADV_REPEAT_PERIOD = 1.0
+HB_REPEAT_PERIOD = 1.0
+HB_MESSAGE = '__HEARTBEAT__'
 VERSION = 0x0001
 TOPIC_MAXLENGTH = 192
 FLAGS_LENGTH = 16
@@ -132,7 +134,7 @@ class DZMQ(object):
 
     """
 
-    def __init__(self, context=None, log=None, tcp_port=None, ipaddr=None):
+    def __init__(self, context=None, log=None, address=None):
         self.context = context or zmq.Context.instance()
         self.log = log or get_log()
         self.guid = uuid.uuid4()
@@ -166,8 +168,7 @@ class DZMQ(object):
                 self.ipaddr = '127.0.0.1'
                 self.bcast_host = MULTICAST_GRP
 
-        if ipaddr:
-            self.ipaddr = ipaddr
+        self.address = address
 
         # What's our broadcast port?
         if DZMQ_PORT_KEY in os.environ:
@@ -215,25 +216,27 @@ class DZMQ(object):
         # TODO: figure out what happens with multiple classes
         self.adv_timer = None
         self._advertisement_repeater()
+        self.hb_timer = None
+        self._heartbeat_repeater()
+        self._pub_lock = threading.Lock()
+        self.listeners = {}
         signal.signal(signal.SIGINT, self._sighandler)
 
         # Set up the one pub and one sub socket that we'll use
         self.pub_socket = self.context.socket(zmq.PUB)
         self.pub_socket_addrs = []
-        tcp_addr = 'tcp://%s' % (self.ipaddr)
-        if not tcp_port:
+        if not self.address:
+            tcp_addr = 'tcp://%s' % (self.ipaddr)
             tcp_port = self.pub_socket.bind_to_random_port(tcp_addr)
             tcp_addr += ':%d' % (tcp_port)
+            self.address = tcp_addr
         else:
-            tcp_addr += ':%d' % tcp_port
-            self.pub_socket.bind(tcp_addr)
+            self.pub_socket.bind(self.address)
 
-        self.tcp_addr = tcp_addr
-
-        if len(tcp_addr) > ADDRESS_MAXLENGTH:
-            raise Exception('TCP address length %d exceeds maximum %d'
-                            % (len(tcp_addr), ADDRESS_MAXLENGTH))
-        self.pub_socket_addrs.append(tcp_addr)
+        if len(self.address) > ADDRESS_MAXLENGTH:
+            raise Exception('Address length %d exceeds maximum %d'
+                            % (len(self.address), ADDRESS_MAXLENGTH))
+        self.pub_socket_addrs.append(self.address)
         self.pub_socket.setsockopt(zmq.LINGER, 0)
         self.sub_socket = self.context.socket(zmq.SUB)
         self.sub_socket.setsockopt(zmq.LINGER, 0)
@@ -241,8 +244,6 @@ class DZMQ(object):
 
         self.poller.register(self.bcast_recv, zmq.POLLIN)
         self.poller.register(self.sub_socket, zmq.POLLIN)
-
-        self.listeners = {}
 
     def _start_bcast_recv(self):
         if self.bcast_host == MULTICAST_GRP:
@@ -261,6 +262,7 @@ class DZMQ(object):
 
     def _sighandler(self, sig, frame):
         self.adv_timer.cancel()
+        self.hb_timer.cancel()
         sys.exit(0)
 
     def _advertise(self, publisher):
@@ -306,8 +308,8 @@ class DZMQ(object):
         if inproc_addr not in self.pub_socket_addrs:
             publisher['socket'].bind(inproc_addr)
             self.pub_socket_addrs.append(inproc_addr)
-        tcp_addr = [a for a in self.pub_socket_addrs if a.startswith('tcp')][0]
-        publisher['addresses'] = [inproc_addr, tcp_addr]
+        address = [a for a in self.pub_socket_addrs if a.startswith(('tcp', 'ipc'))][0]
+        publisher['addresses'] = [inproc_addr, address]
         publisher['topic'] = topic
         self.publishers.append(publisher)
         self._advertise(publisher)
@@ -343,7 +345,7 @@ class DZMQ(object):
         # Null body
         self.bcast_send.sendto(msg, (self.bcast_host, self.bcast_port))
 
-    def _synch(self, adv):
+    def _synch(self, topic, address):
         """
         Internal method to pack and broadcast SYN message.
         """
@@ -353,19 +355,19 @@ class DZMQ(object):
         # struct.pack()
         for i in range(0, GUID_LENGTH):
             msg += struct.pack('<B', (self.guid.int >> i * 8) & 0xFF)
-        msg += struct.pack('<B', len(adv['topic']))
-        msg += adv['topic'].encode('utf-8')
+        msg += struct.pack('<B', len(topic))
+        msg += topic.encode('utf-8')
         msg += struct.pack('<B', OP_SYN)
         # Flags unused for now
         flags = [0x00] * FLAGS_LENGTH
         msg += struct.pack('<%dB' % FLAGS_LENGTH, *flags)
-        msg += struct.pack('<H', len(adv['address']))
-        msg += adv['address'].encode('utf-8')
-        msg += struct.pack('<H', len(self.tcp_addr))
-        msg += self.tcp_addr.encode('utf-8')
+        msg += struct.pack('<H', len(address))
+        msg += address.encode('utf-8')
+        msg += struct.pack('<H', len(self.address))
+        msg += self.address.encode('utf-8')
         self.bcast_send.sendto(msg, (self.bcast_host, self.bcast_port))
 
-    def subscribe(self, topic, cb, raw=False):
+    def subscribe(self, topic, cb):
         """
         Subscribe to the given topic.  Received messages will be passed to
         given the callback, which should have the signature: cb(topic, msg).
@@ -374,7 +376,6 @@ class DZMQ(object):
         subscriber = {}
         subscriber['topic'] = topic
         subscriber['cb'] = cb
-        subscriber['raw'] = raw
         self.subscribers.append(subscriber)
         self._subscribe(subscriber)
 
@@ -397,7 +398,8 @@ class DZMQ(object):
         """
         if [p for p in self.publishers if p['topic'] == topic]:
             msg = pack_msg(msg)
-            self.pub_socket.send_multipart((topic.encode('utf-8'), msg))
+            with self._pub_lock:
+                self.pub_socket.send_multipart((topic.encode('utf-8'), msg))
 
     def _handle_adv_sub(self, msg):
         """
@@ -461,7 +463,7 @@ class DZMQ(object):
                 sub_addr = data[offset:offset + addresslength].decode('utf-8')
                 offset += addresslength
 
-                if pub_addr == self.tcp_addr and not sub_addr == self.tcp_addr:
+                if pub_addr == self.address and not sub_addr == self.address:
                     self.listeners[topic].add(sub_addr)
 
             else:
@@ -503,7 +505,6 @@ class DZMQ(object):
         for c in self.sub_connections:
             if c['topic'] == adv['topic'] and c['address'] == adv['address']:
                 c['guid'] == adv['guid']
-                self._synch(adv)
                 return
 
         # Connect our subscriber socket
@@ -521,7 +522,6 @@ class DZMQ(object):
         self.sub_connections.append(conn)
         self.log.info('Connected to %s for %s (%s != %s)' %
                       (adv['address'], adv['topic'], adv['guid'], self.guid))
-        self._synch(adv)
 
     def _advertisement_repeater(self):
         if self.closed:
@@ -530,6 +530,20 @@ class DZMQ(object):
         self.adv_timer = threading.Timer(
             ADV_REPEAT_PERIOD, self._advertisement_repeater)
         self.adv_timer.start()
+
+    def _heartbeat_repeater(self):
+        if self.closed:
+            return
+        if self.publishers:
+            msg = pack_msg({HB_MESSAGE: True,
+                                        'address': self.address})
+            for p in self.publishers:
+                topic = p['topic'].encode('utf-8')
+                with self._pub_lock:
+                    self.pub_socket.send_multipart((topic, msg))
+        self.hb_timer = threading.Timer(
+            HB_REPEAT_PERIOD, self._heartbeat_repeater)
+        self.hb_timer.start()
 
     def spinOnce(self, timeout=-1):
         """
@@ -555,21 +569,15 @@ class DZMQ(object):
             topic, msg = self.sub_socket.recv_multipart()
             topic = topic.decode('utf-8')
 
-            raw_subs = [s for s in self.subscribers
-                        if s['topic'] == topic and s['raw']]
-            if raw_subs:
-                [s['cb'](msg) for s in raw_subs]
-
-            other_subs = [s for s in self.subscribers
-                          if s['topic'] == topic and not s['raw']]
-            if other_subs:
-                msg = unpack_msg(msg)
+            msg = unpack_msg(msg)
+            if HB_MESSAGE in msg:
+                self._synch(topic, msg['address'])
+            else:
                 if len(msg) == 1 and '___payload__' in msg:
                     msg = msg['___payload__']
-                [s['cb'](msg) for s in other_subs]
+                [s['cb'](msg) for s in self.subscribers if s['topic'] == topic]
 
-            if raw_subs or other_subs:
-                self.log.debug('Got message: %s' % topic)
+            self.log.debug('Got message: %s' % topic)
 
     def spin(self):
         """
@@ -580,6 +588,8 @@ class DZMQ(object):
 
     def close(self):
         self.closed = True
+        self.adv_timer.cancel()
+        self.hb_timer.cancel()
         self.bcast_recv.close()
         self.bcast_send.close()
         self.pub_socket.close()

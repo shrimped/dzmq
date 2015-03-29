@@ -3,8 +3,13 @@
 
 import pybsonmq
 import time
+import sys
 
-d = pybsonmq.DZMQ(tcp_port=55545, ipaddr='127.0.0.1')
+if 'linux' in sys.platform:
+    d = pybsonmq.DZMQ(address='ipc:///tmp/other')
+else:
+    d = pybsonmq.DZMQ()
+
 d.advertise('status')
 d.advertise('log')
 d.advertise('sensor_data')
@@ -12,8 +17,7 @@ d.advertise('sensor_data')
 
 while not d.listeners['log']:
     d.spinOnce(0.001)
-time.sleep(0.25)
-
+print('synched')
 
 i = 0
 while i < 10000:
