@@ -135,6 +135,17 @@ class DZMQ(object):
     """
 
     def __init__(self, context=None, log=None, address=None):
+        """ Initialize the DZMQ interface
+
+        Parameters
+        ----------
+        context : zmq.Context, optional
+            zmq Context instance.
+        log : logging.Logger
+            Logger instance.
+        address : str
+            Valid ZMQ address: tcp:// or ipc://.
+        """
         self.context = context or zmq.Context.instance()
         self.log = log or get_log()
         self.guid = uuid.uuid4()
@@ -255,11 +266,6 @@ class DZMQ(object):
             self.log.info("Opened (%s, %s)" %
                           (self.bcast_host, self.bcast_port))
 
-    def _sighandler(self, sig, frame):
-        self.adv_timer.cancel()
-        self.hb_timer.cancel()
-        sys.exit(0)
-
     def _advertise(self, publisher):
         """
         Internal method to pack and broadcast ADV message.
@@ -287,6 +293,11 @@ class DZMQ(object):
     def advertise(self, topic):
         """
         Advertise the given topic.  Do this before calling publish().
+
+        Parameters
+        ----------
+        topic : str
+            Topic name.
         """
         if len(topic) > TOPIC_MAXLENGTH:
             raise Exception('Topic length %d exceeds maximum %d'
@@ -315,6 +326,14 @@ class DZMQ(object):
                 self._connect_subscriber(adv)
 
     def unadvertise(self, topic):
+        """
+        Unadvertise a topic.
+
+        Parameters
+        ----------
+        topic : str
+            Topic name.
+        """
         self.publishers = [p for p in self.publishers if p['topic'] != topic]
 
     def _subscribe(self, subscriber):
@@ -355,7 +374,12 @@ class DZMQ(object):
     def subscribe(self, topic, cb):
         """
         Subscribe to the given topic.  Received messages will be passed to
-        given the callback, which should have the signature: cb(topic, msg).
+        given the callback, which should have the signature: cb(msg).
+
+        topic : str
+            Name of topic.
+        cb : callable
+            Callable that accepts one argument (msg).
         """
         # Record what we're doing
         subscriber = {}
@@ -374,12 +398,27 @@ class DZMQ(object):
                 self._connect_subscriber(adv)
 
     def unsubscribe(self, topic):
+        """
+        Unsubscribe from a given topic.
+
+        Parameters
+        ----------
+        topic : str
+            Name of topic.
+        """
         self.subscribers = [s for s in self.subscribers if s['topic'] != topic]
 
     def publish(self, topic, msg):
         """
         Publish the given message on the given topic.  You should have called
         advertise() on the topic first.
+
+        Parameters
+        ----------
+        topic : str
+            Name of topic.
+        msg : str or dict
+            Mesage to send.
         """
         if [p for p in self.publishers if p['topic'] == topic]:
             msg = pack_msg(msg)
@@ -510,6 +549,14 @@ class DZMQ(object):
                       (adv['address'], adv['topic'], adv['guid'], self.guid))
 
     def get_listeners(self, topic):
+        """
+        Get a list of current listeners for a given topic.
+
+        Parameters
+        ----------
+        topic : str
+            Name of topic.
+        """
         if topic not in self._listeners:
             return
         return [addr for (addr, tstamp) in self._listeners[topic].items()
@@ -517,9 +564,13 @@ class DZMQ(object):
 
     def spinOnce(self, timeout=-1):
         """
-        Check once for incoming messages, invoking callbacks for received
-        messages.  Wait for up to timeout seconds.  For no waiting, set
-        timeout=0. To wait forever, set timeout=-1.
+        Check for incoming messages, invoking callbacks.
+
+        Parameters
+        ----------
+        timeout : float
+            Timeout in seconds. Wait for up to timeout seconds.  For no
+            waiting, set timeout=0. To wait forever, set timeout=-1.
         """
         if timeout < 0:
             # zmq interprets timeout=None as infinite
@@ -573,6 +624,9 @@ class DZMQ(object):
             self.spinOnce(0.01)
 
     def close(self):
+        """
+        Close the DZMQ Interface and all of its ports.
+        """
         self.bcast_recv.close()
         self.bcast_send.close()
         self.pub_socket.close()
@@ -586,8 +640,21 @@ _local_addrs = None
 
 def get_local_addresses(use_ipv6=False, addrs=None, ifaces=None):
     """
-    :returns: known local addresses. Not affected by ROS_IP/ROS_HOSTNAME,
-``[str]``
+    Get a list of local ip addresses that meet a given criteria.
+
+    Parameters
+    ----------
+    use_ipv6 : bool, optional
+        Whether to allow ipv6 addresses.
+    addrs : list of strings, optional
+        List of addresses to look for.
+    ifaces : list strings, optional
+        List of ethernet interfaces.
+
+    Returns
+    -------
+    address : list of strings
+        List of available local ip addresses that meet a given criteria.
     """
     # cache address data as it can be slow to calculate
     global _local_addrs
