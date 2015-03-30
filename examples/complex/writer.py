@@ -1,13 +1,13 @@
 #!/usr/bin/env python
 from __future__ import print_function
-import pybsonmq
+import dzmq
 import time
 import sys
 
 if 'linux' in sys.platform:
-    d = pybsonmq.DZMQ(address='ipc:///tmp/writer')
+    d = dzmq.DZMQ(address='ipc:///tmp/writer')
 else:
-    d = pybsonmq.DZMQ()
+    d = dzmq.DZMQ()
 
 d.advertise('status')
 

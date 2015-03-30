@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 import sys
-import pybsonmq
+import dzmq
 
 if len(sys.argv) > 1:
     topic = sys.argv[1]
@@ -12,7 +12,7 @@ if len(sys.argv) > 2:
 else:
     msg = 'foobar'
 
-d = pybsonmq.DZMQ()
+d = dzmq.DZMQ()
 d.advertise(topic)
 
 i = 0

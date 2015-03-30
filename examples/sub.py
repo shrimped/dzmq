@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 import sys
-import pybsonmq
+import dzmq
 
 if len(sys.argv) > 1:
     topic = sys.argv[1]
@@ -16,7 +16,7 @@ def cb1(msg):
 def cb2(msg):
     print('2: Got %s' % msg)
 
-d = pybsonmq.DZMQ()
+d = dzmq.DZMQ()
 d.subscribe(topic, cb1)
 d.subscribe(topic, cb2)
 d.spin()

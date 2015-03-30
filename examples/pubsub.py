@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 import sys
-import pybsonmq
+import dzmq
 import time
 
 if len(sys.argv) > 1:
@@ -17,7 +17,7 @@ else:
 def cb(msg):
     print('Got %s' % msg)
 
-d = pybsonmq.DZMQ()
+d = dzmq.DZMQ()
 d.subscribe(topic, cb)
 d.advertise(topic)
 
