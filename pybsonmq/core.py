@@ -593,7 +593,7 @@ class DZMQ(object):
         return [addr for (addr, tstamp) in self._listeners[topic].items()
                 if (time.time() - tstamp) < 2 * HB_REPEAT_PERIOD]
 
-    def spinOnce(self, timeout=-1):
+    def spinOnce(self, timeout=-1, allow_respin=True):
         """
         Check for incoming messages, invoking callbacks.
 
@@ -602,6 +602,9 @@ class DZMQ(object):
         timeout : float
             Timeout in seconds. Wait for up to timeout seconds.  For no
             waiting, set timeout=0. To wait forever, set timeout=-1.
+        allow_respin : bool, optional
+            Whether to spin again if timeout > 0 with a timeout of 0 to catch
+            a follow up message in the queue.  This aids in overall throughput.
         """
         if timeout < 0:
             # zmq interprets timeout=None as infinite
@@ -645,7 +648,7 @@ class DZMQ(object):
             [self._advertise(p) for p in self.publishers]
             self._last_adv_time = time.time()
 
-        if timeout > 0:
+        if timeout > 0 and allow_respin:
             self.spinOnce(timeout=0)
 
     def spin(self):
