@@ -21,7 +21,9 @@ import platform
 import struct
 import threading
 import signal
+from collections import defaultdict
 import sys
+import time
 import netifaces
 import base64
 import json
@@ -219,7 +221,7 @@ class DZMQ(object):
         self.hb_timer = None
         self._heartbeat_repeater()
         self._pub_lock = threading.Lock()
-        self.listeners = {}
+        self._listeners = defaultdict(dict)
         signal.signal(signal.SIGINT, self._sighandler)
 
         # Set up the one pub and one sub socket that we'll use
@@ -299,8 +301,6 @@ class DZMQ(object):
         if len(topic) > TOPIC_MAXLENGTH:
             raise Exception('Topic length %d exceeds maximum %d'
                             % (len(topic), TOPIC_MAXLENGTH))
-        if topic not in self.listeners:
-            self.listeners[topic] = set()
         publisher = {}
         publisher['socket'] = self.pub_socket
         inproc_addr = 'inproc://%s' % topic
@@ -464,7 +464,9 @@ class DZMQ(object):
                 offset += addresslength
 
                 if pub_addr == self.address and not sub_addr == self.address:
-                    self.listeners[topic].add(sub_addr)
+                    if topic not in self._listeners:
+                        self._listeners[topic] = dict()
+                    self._listeners[topic][sub_addr] = time.time()
 
             else:
                 self.log.warn('Warning: got unrecognized OP: %d' % op)
@@ -544,6 +546,12 @@ class DZMQ(object):
         self.hb_timer = threading.Timer(
             HB_REPEAT_PERIOD, self._heartbeat_repeater)
         self.hb_timer.start()
+
+    def get_listeners(self, topic):
+        if topic not in self._listeners:
+            return
+        return [addr for (addr, tstamp) in self._listeners[topic].items()
+                if (time.time() - tstamp) < 2 * HB_REPEAT_PERIOD]
 
     def spinOnce(self, timeout=-1):
         """

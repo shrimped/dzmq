@@ -15,7 +15,7 @@ d.advertise('log')
 d.advertise('sensor_data')
 
 
-while not d.listeners['log']:
+while not d.get_listeners('log'):
     d.spinOnce(0.001)
 print('synched')
 
@@ -28,5 +28,5 @@ while i < 10000:
     if (i % 10) == 0:
         d.publish('log', 'other says hello')
 
-print(d.listeners)
+print(d.get_listeners('log'))
 print('done!')
