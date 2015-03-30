@@ -19,6 +19,7 @@ import os
 import logging
 import platform
 import struct
+import atexit
 from collections import defaultdict
 import sys
 import time
@@ -51,11 +52,13 @@ OP_ADV = 0x01
 OP_SUB = 0x02
 OP_SYN = 0x03
 
+PUB_HB = b'H'
+PUB_MSG = b'M'
+
 UDP_MAX_SIZE = 512
 GUID_LENGTH = 16
 ADV_REPEAT_PERIOD = 1.11
 HB_REPEAT_PERIOD = 1.0
-HB_MESSAGE = '__HEARTBEAT__'
 VERSION = 0x0001
 TOPIC_MAXLENGTH = 192
 FLAGS_LENGTH = 16
@@ -149,6 +152,8 @@ class DZMQ(object):
         self.context = context or zmq.Context.instance()
         self.log = log or get_log()
         self.guid = uuid.uuid4()
+
+        atexit.register(self.close)
 
         if DEBUG:
             self.log.setLevel(logging.DEBUG)
@@ -421,7 +426,7 @@ class DZMQ(object):
             Mesage to send.
         """
         if [p for p in self.publishers if p['topic'] == topic]:
-            msg = pack_msg(msg)
+            msg = PUB_MSG + pack_msg(msg)
             self.pub_socket.send_multipart((topic.encode('utf-8'), msg))
 
     def _handle_bcast_recv(self, msg):
@@ -590,8 +595,10 @@ class DZMQ(object):
             topic, msg = self.sub_socket.recv_multipart()
             topic = topic.decode('utf-8')
 
-            msg = unpack_msg(msg)
-            if HB_MESSAGE in msg:
+            mtype = msg[0]
+            msg = unpack_msg(msg[1:])
+
+            if mtype == PUB_HB:
                 self._synch(topic, msg['address'])
             else:
                 if len(msg) == 1 and '___payload__' in msg:
@@ -602,8 +609,7 @@ class DZMQ(object):
 
         if (time.time() - self._last_hb_time) > HB_REPEAT_PERIOD:
             if self.publishers:
-                msg = pack_msg({HB_MESSAGE: True,
-                                'address': self.address})
+                msg = PUB_HB + pack_msg({'address': self.address})
                 for p in self.publishers:
                     topic = p['topic'].encode('utf-8')
                     self.pub_socket.send_multipart((topic, msg))
