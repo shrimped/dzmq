@@ -1,2 +1,2 @@
-pybsonmq.egg-info
+*.egg-info
 *.pyc

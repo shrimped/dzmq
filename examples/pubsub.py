@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 
 import sys
-import disc_zmq
+import dzmq
+import time
 
 if len(sys.argv) > 1:
     topic = sys.argv[1]
@@ -12,11 +13,17 @@ if len(sys.argv) > 2:
 else:
     msg = 'foobar'
 
-d = disc_zmq.DZMQ()
+
+def cb(msg):
+    print('Got %s' % msg)
+
+d = dzmq.DZMQ()
+d.subscribe(topic, cb)
 d.advertise(topic)
 
 i = 0
 while True:
     d.publish(topic, '%s %d' % (msg, i))
-    d.spinOnce(0.2)
+    d.spinOnce(0)
+    time.sleep(0.2)
     i += 1
