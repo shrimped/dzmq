@@ -482,7 +482,7 @@ class DZMQ(object):
         # as our GUID, then we must both be in the same process, in which case
         # we'd like to use an 'inproc://' address.  Otherwise, fall back on
         # 'tcp://'.
-        if adv['address'].startswith('tcp'):
+        if adv['address'].startswith(('tcp', 'ipc')):
             if adv['guid'] == self.guid:
                 # Us; skip it
                 return
@@ -491,7 +491,7 @@ class DZMQ(object):
                 # Not us; skip it
                 return
         else:
-            self.log.warn('Warning: ingoring unknown address type: %s' %
+            self.log.warn('Warning: ignoring unknown address type: %s' %
                           (adv['address']))
             return
 
