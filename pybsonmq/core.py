@@ -214,8 +214,6 @@ class DZMQ(object):
         self.poller = zmq.Poller()
         self._listeners = defaultdict(dict)
 
-        # TODO: figure out what happens with multiple classes
-
         # Set up the one pub and one sub socket that we'll use
         self.pub_socket = self.context.socket(zmq.PUB)
         self.pub_socket_addrs = []
@@ -296,11 +294,12 @@ class DZMQ(object):
         publisher = {}
         publisher['socket'] = self.pub_socket
         inproc_addr = 'inproc://%s' % topic
-        # TODO: consider race condition in this test and set:
+
         if inproc_addr not in self.pub_socket_addrs:
             publisher['socket'].bind(inproc_addr)
             self.pub_socket_addrs.append(inproc_addr)
-        address = [a for a in self.pub_socket_addrs if a.startswith(('tcp', 'ipc'))][0]
+        address = [a for a in self.pub_socket_addrs
+                   if a.startswith(('tcp', 'ipc'))][0]
         publisher['addresses'] = [inproc_addr, address]
         publisher['topic'] = topic
         self.publishers.append(publisher)
