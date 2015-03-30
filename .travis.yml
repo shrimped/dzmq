@@ -6,6 +6,10 @@
 # http://conda.pydata.org/docs/travis.html
 language: python
 
+python:
+- 2.7
+- 3.4
+
 install:
   - python setup.py install
 
