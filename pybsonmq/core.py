@@ -67,6 +67,19 @@ DEBUG = False
 
 
 def unpack_msg(data):
+    """
+    Unpack a binary data message into a dictionary.
+
+    Parameters
+    ----------
+    data : bytes
+        Binary data message.
+
+    Returns
+    -------
+    out : dict
+        Unpacked message.
+    """
     def unpack(obj):
         if not BSON:
             obj = json.loads(obj.decode('utf-8'))
@@ -94,6 +107,19 @@ def unpack_msg(data):
 
 
 def pack_msg(obj):
+    """
+    Pack an object into a binary data message.
+
+    Parameters
+    ----------
+    obj : str or dictionary
+        Object to pack.
+
+    Returns
+    -------
+    out : bytes
+        Binary data message.
+    """
     if not isinstance(obj, dict):
         obj = dict(___payload__=obj)
     for (key, value) in obj.items():
