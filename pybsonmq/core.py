@@ -19,8 +19,6 @@ import os
 import logging
 import platform
 import struct
-import threading
-import signal
 from collections import defaultdict
 import sys
 import time
@@ -55,7 +53,7 @@ OP_SYN = 0x03
 
 UDP_MAX_SIZE = 512
 GUID_LENGTH = 16
-ADV_REPEAT_PERIOD = 1.0
+ADV_REPEAT_PERIOD = 1.11
 HB_REPEAT_PERIOD = 1.0
 HB_MESSAGE = '__HEARTBEAT__'
 VERSION = 0x0001
@@ -140,7 +138,6 @@ class DZMQ(object):
         self.context = context or zmq.Context.instance()
         self.log = log or get_log()
         self.guid = uuid.uuid4()
-        self.closed = False
 
         if DEBUG:
             self.log.setLevel(logging.DEBUG)
@@ -215,14 +212,9 @@ class DZMQ(object):
         self.subscribers = []
         self.sub_connections = []
         self.poller = zmq.Poller()
-        # TODO: figure out what happens with multiple classes
-        self.adv_timer = None
-        self._advertisement_repeater()
-        self.hb_timer = None
-        self._heartbeat_repeater()
-        self._pub_lock = threading.Lock()
         self._listeners = defaultdict(dict)
-        signal.signal(signal.SIGINT, self._sighandler)
+
+        # TODO: figure out what happens with multiple classes
 
         # Set up the one pub and one sub socket that we'll use
         self.pub_socket = self.context.socket(zmq.PUB)
@@ -246,6 +238,9 @@ class DZMQ(object):
 
         self.poller.register(self.bcast_recv, zmq.POLLIN)
         self.poller.register(self.sub_socket, zmq.POLLIN)
+
+        self._last_hb_time = 0
+        self._last_adv_time = 0
 
     def _start_bcast_recv(self):
         if self.bcast_host == MULTICAST_GRP:
@@ -398,8 +393,7 @@ class DZMQ(object):
         """
         if [p for p in self.publishers if p['topic'] == topic]:
             msg = pack_msg(msg)
-            with self._pub_lock:
-                self.pub_socket.send_multipart((topic.encode('utf-8'), msg))
+            self.pub_socket.send_multipart((topic.encode('utf-8'), msg))
 
     def _handle_adv_sub(self, msg):
         """
@@ -525,28 +519,6 @@ class DZMQ(object):
         self.log.info('Connected to %s for %s (%s != %s)' %
                       (adv['address'], adv['topic'], adv['guid'], self.guid))
 
-    def _advertisement_repeater(self):
-        if self.closed:
-            return
-        [self._advertise(p) for p in self.publishers]
-        self.adv_timer = threading.Timer(
-            ADV_REPEAT_PERIOD, self._advertisement_repeater)
-        self.adv_timer.start()
-
-    def _heartbeat_repeater(self):
-        if self.closed:
-            return
-        if self.publishers:
-            msg = pack_msg({HB_MESSAGE: True,
-                                        'address': self.address})
-            for p in self.publishers:
-                topic = p['topic'].encode('utf-8')
-                with self._pub_lock:
-                    self.pub_socket.send_multipart((topic, msg))
-        self.hb_timer = threading.Timer(
-            HB_REPEAT_PERIOD, self._heartbeat_repeater)
-        self.hb_timer.start()
-
     def get_listeners(self, topic):
         if topic not in self._listeners:
             return
@@ -587,6 +559,19 @@ class DZMQ(object):
 
             self.log.debug('Got message: %s' % topic)
 
+        if (time.time() - self._last_hb_time) > HB_REPEAT_PERIOD:
+            if self.publishers:
+                msg = pack_msg({HB_MESSAGE: True,
+                                'address': self.address})
+                for p in self.publishers:
+                    topic = p['topic'].encode('utf-8')
+                    self.pub_socket.send_multipart((topic, msg))
+            self._last_hb_time = time.time()
+
+        elif (time.time() - self._last_adv_time) > ADV_REPEAT_PERIOD:
+            [self._advertise(p) for p in self.publishers]
+            self._last_adv_time = time.time()
+
     def spin(self):
         """
         Give control to the message event loop.
@@ -595,9 +580,6 @@ class DZMQ(object):
             self.spinOnce(0.01)
 
     def close(self):
-        self.closed = True
-        self.adv_timer.cancel()
-        self.hb_timer.cancel()
         self.bcast_recv.close()
         self.bcast_send.close()
         self.pub_socket.close()

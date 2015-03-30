@@ -22,8 +22,8 @@ print('synched')
 i = 0
 while i < 10000:
     d.spinOnce(0.0)
-    d.publish('sensor_data', 'other data' * 10)
-    time.sleep(0.001)
+    d.publish('sensor_data', 'other data' * 1000)
+    time.sleep(0.0015)
     i += 1
     if (i % 10) == 0:
         d.publish('log', 'other says hello')
