@@ -1,7 +1,7 @@
 Simple library (with reference Python implementation) to do discovery
 on top of zeromq messaging. This is a modification of the ROS 2.0 zmq
 prototype to implement messaging + discovery via zmq with serialization
-handled through JSON or BSON (if available).
+handled through JSON or BSON (if available).  Also provides topic  synchronization capability through the `get_listeners` method.
 
 Raw message definitions:
 
@@ -53,3 +53,4 @@ API sketch:
     * `cb(msg)`
   * `unsubscribe(topic)`
   * `publish(topic, msg)`
+  * `get_listeners(topic)`
