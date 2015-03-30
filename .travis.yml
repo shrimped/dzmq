@@ -1,0 +1,16 @@
+# travis-ci.org definition for dzmq build
+
+# After changing this file, check it on:
+#   http://lint.travis-ci.org/
+
+# http://conda.pydata.org/docs/travis.html
+language: python
+
+install:
+  - python setup.py install
+
+script: 
+   - nosetests -v dzmq
+
+after_success:
+    - coveralls
