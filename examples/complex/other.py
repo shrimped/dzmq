@@ -23,7 +23,7 @@ i = 0
 while i < 10000:
     d.spinOnce(0.0)
     d.publish('sensor_data', 'other data' * 1000)
-    time.sleep(0.0015)
+    time.sleep(0.0005)
     i += 1
     if (i % 10) == 0:
         d.publish('log', 'other says hello')

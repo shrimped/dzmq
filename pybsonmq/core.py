@@ -395,9 +395,9 @@ class DZMQ(object):
             msg = pack_msg(msg)
             self.pub_socket.send_multipart((topic.encode('utf-8'), msg))
 
-    def _handle_adv_sub(self, msg):
+    def _handle_bcast_recv(self, msg):
         """
-        Internal method to handle receipt of SUB and ADV messages.
+        Internal method to handle receipt of broadcast messages.
         """
         try:
             data, addr = msg
@@ -542,7 +542,7 @@ class DZMQ(object):
         items = dict(self.poller.poll(timeout))
 
         if items.get(self.bcast_recv.fileno(), None) == zmq.POLLIN:
-            self._handle_adv_sub(self.bcast_recv.recvfrom(UDP_MAX_SIZE))
+            self._handle_bcast_recv(self.bcast_recv.recvfrom(UDP_MAX_SIZE))
 
         if items.get(self.sub_socket, None) == zmq.POLLIN:
             # Get the message (assuming that we get it all in one read)
@@ -571,6 +571,9 @@ class DZMQ(object):
         elif (time.time() - self._last_adv_time) > ADV_REPEAT_PERIOD:
             [self._advertise(p) for p in self.publishers]
             self._last_adv_time = time.time()
+
+        if timeout > 0:
+            self.spinOnce(timeout=0)
 
     def spin(self):
         """
