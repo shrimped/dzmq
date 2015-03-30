@@ -593,7 +593,7 @@ class DZMQ(object):
         return [addr for (addr, tstamp) in self._listeners[topic].items()
                 if (time.time() - tstamp) < 2 * HB_REPEAT_PERIOD]
 
-    def spinOnce(self, timeout=-1, allow_respin=True):
+    def spinOnce(self, timeout=0.001, allow_respin=True):
         """
         Check for incoming messages, invoking callbacks.
 
@@ -627,14 +627,15 @@ class DZMQ(object):
             mtype = msg[0]
             msg = unpack_msg(msg[1:])
 
-            if mtype == PUB_HB:
-                self._synch(topic, msg['address'])
-            else:
-                if len(msg) == 1 and '___payload__' in msg:
-                    msg = msg['___payload__']
-                [s['cb'](msg) for s in self.subscribers if s['topic'] == topic]
-
-            self.log.debug('Got message: %s' % topic)
+            subs = [s for s in self.subscribers if s['topic'] == topic]
+            if subs:
+                if mtype == PUB_HB:
+                    self._synch(topic, msg['address'])
+                else:
+                    if len(msg) == 1 and '___payload__' in msg:
+                        msg = msg['___payload__']
+                    [s['cb'](msg) for s in subs]
+                    self.log.debug('Got message: %s' % topic)
 
         if (time.time() - self._last_hb_time) > HB_REPEAT_PERIOD:
             if self.publishers:
