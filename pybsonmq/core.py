@@ -268,10 +268,7 @@ class DZMQ(object):
         """
         msg = b''
         msg += struct.pack('<H', VERSION)
-        # TODO: pack the GUID more efficiently; should only need one call to
-        # struct.pack()
-        for i in range(0, GUID_LENGTH):
-            msg += struct.pack('<B', (self.guid.int >> i * 8) & 0xFF)
+        msg += self.guid.bytes
         msg += struct.pack('<B', len(publisher['topic']))
         msg += publisher['topic'].encode('utf-8')
         msg += struct.pack('<B', OP_ADV)
@@ -327,10 +324,7 @@ class DZMQ(object):
         """
         msg = b''
         msg += struct.pack('<H', VERSION)
-        # TODO: pack the GUID more efficiently; should only need one call to
-        # struct.pack()
-        for i in range(0, GUID_LENGTH):
-            msg += struct.pack('<B', (self.guid.int >> i * 8) & 0xFF)
+        msg += self.guid.bytes
         msg += struct.pack('<B', len(subscriber['topic']))
         msg += subscriber['topic'].encode('utf-8')
         msg += struct.pack('<B', OP_SUB)
@@ -346,10 +340,7 @@ class DZMQ(object):
         """
         msg = b''
         msg += struct.pack('<H', VERSION)
-        # TODO: pack the GUID more efficiently; should only need one call to
-        # struct.pack()
-        for i in range(0, GUID_LENGTH):
-            msg += struct.pack('<B', (self.guid.int >> i * 8) & 0xFF)
+        msg += self.guid.bytes
         msg += struct.pack('<B', len(topic))
         msg += topic.encode('utf-8')
         msg += struct.pack('<B', OP_SYN)
