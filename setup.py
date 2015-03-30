@@ -4,15 +4,14 @@ except ImportError:
     from distutils.core import setup
 
 config = {
-    'description': 'pybsonmq',
-    'author': 'Donald Venable',
-    'url': 'https://bitbucket.org/blink1073/aimq',
-    'author_email': 'donald.venable@us.af.mil',
+    'description': 'Simple library to do discovery on top of zeromq messaging',
+    'author': 'Steven Silvester',
+    'url': 'https://github.com/shrimped/disc_zmq',
+    'author_email': 'steven.silvester@ieee.org',
     'version': '0.1',
-    'install_requires': ['nose', 'pyzmq', 'netifaces'],
-    'packages': ['pybsonmq'],
-    'scripts': [],
-    'name': 'pybsonmq'
+    'install_requires': ['pyzmq', 'netifaces'],
+    'packages': ['dzmq'],
+    'name': 'disc_zmq'
 }
 
 setup(**config)
