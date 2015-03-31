@@ -5,7 +5,7 @@
 
 # http://conda.pydata.org/docs/travis.html
 language: python
-
+sudo: required
 
 before_install:
   - export DISPLAY=:99.0
