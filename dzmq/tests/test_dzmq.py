@@ -40,7 +40,7 @@ class TestPubSub(object):
         payload = {'foo': 'bar'}
 
         def cb(msg):
-            assert msg == payload
+            assert msg == payload, msg
 
         self.sub.subscribe('what_what', cb)
         self.sub.spinOnce()
@@ -129,7 +129,7 @@ class TestPubSub(object):
         payload = {'spam': 100}
 
         def cb(msg):
-            assert msg == payload
+            assert msg == payload, msg
 
         self.sub.subscribe('yeah_yeah', cb)
 

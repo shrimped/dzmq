@@ -111,7 +111,7 @@ def pack_msg(obj):
     for (key, value) in obj.items():
         if np and isinstance(value, np.ndarray):
             if BSON is None:
-                data = base64.b64encode(value.tobytes())
+                data = base64.b64encode(value.tobytes()).decode('utf-8')
             else:
                 data = Binary(value.tobytes())
             obj[key] = dict(shape=value.shape,
@@ -119,6 +119,7 @@ def pack_msg(obj):
                             data=data)
         elif isinstance(value, dict):  # Make sure we recurse into sub-dicts
             obj[key] = pack_msg(value)
+    print(obj)
     if BSON is None:
         return json.dumps(obj).encode('utf-8')
     else:
@@ -438,8 +439,8 @@ class DZMQ(object):
             Mesage to send.
         """
         if [p for p in self.publishers if p['topic'] == topic]:
-            msg = PUB_MSG + pack_msg(msg)
-            self.pub_socket.send_multipart((topic.encode('utf-8'), msg))
+            msg = pack_msg(msg)
+            self.pub_socket.send_multipart((topic.encode('utf-8'), PUB_MSG, msg))
 
     def _handle_bcast_recv(self, msg):
         """
@@ -607,28 +608,29 @@ class DZMQ(object):
 
         if items.get(self.sub_socket, None) == zmq.POLLIN:
             # Get the message (assuming that we get it all in one read)
-            topic, msg = self.sub_socket.recv_multipart()
+            topic, mtype, msg = self.sub_socket.recv_multipart()
             topic = topic.decode('utf-8')
 
-            mtype = msg[0]
-            msg = unpack_msg(msg[1:])
+            msg = unpack_msg(msg)
 
             subs = [s for s in self.subscribers if s['topic'] == topic]
             if subs:
                 if mtype == PUB_HB:
                     self._synch(topic, msg['address'])
-                else:
+                elif mtype == PUB_MSG:
                     if len(msg) == 1 and '___payload__' in msg:
                         msg = msg['___payload__']
                     [s['cb'](msg) for s in subs]
                     self.log.debug('Got message: %s' % topic)
+                else:
+                    raise ValueError(repr(mtype))
 
         if (time.time() - self._last_hb_time) > HB_REPEAT_PERIOD:
             if self.publishers:
-                msg = PUB_HB + pack_msg({'address': self.address})
+                msg = pack_msg({'address': self.address})
                 for p in self.publishers:
                     topic = p['topic'].encode('utf-8')
-                    self.pub_socket.send_multipart((topic, msg))
+                    self.pub_socket.send_multipart((topic, PUB_HB, msg))
             self._last_hb_time = time.time()
 
         elif (time.time() - self._last_adv_time) > ADV_REPEAT_PERIOD:
