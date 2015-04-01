@@ -1,0 +1,34 @@
+# travis-ci.org definition for dzmq build
+
+# After changing this file, check it on:
+#   http://lint.travis-ci.org/
+
+# http://conda.pydata.org/docs/travis.html
+language: python
+sudo: required
+
+before_install:
+  - export DISPLAY=:99.0
+  - sudo ifconfig venet0 -broadcast -multicast
+  - ifconfig venet0
+  - sh -e /etc/init.d/xvfb start
+  - wget "http://repo.continuum.io/miniconda/Miniconda-latest-Linux-x86_64.sh" -O miniconda.sh;
+  - bash miniconda.sh -b -p "$HOME/miniconda";
+  - export PATH="$HOME/miniconda/bin:$PATH";
+  - hash -r;
+  - conda config --set always_yes yes --set changeps1 no;
+  - conda update -q conda;
+
+  - # Useful for debugging any issues with conda
+  - conda info -a;
+
+  - conda install pyzmq nose
+
+install:
+  - python setup.py install
+
+script:
+   - nosetests -v dzmq
+
+after_success:
+    - coveralls
