@@ -628,7 +628,7 @@ class DZMQ(object):
                     raise ValueError(repr(mtype))
 
         if (time.time() - self._last_hb_time) > HB_REPEAT_PERIOD:
-            self._hb_queue.extend((msg, p) for p in self.publishers)
+            self._hb_queue.extend(self.publishers)
             self._last_hb_time = time.time()
 
         elif (time.time() - self._last_adv_time) > ADV_REPEAT_PERIOD:
