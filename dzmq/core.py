@@ -267,7 +267,9 @@ class DZMQ(object):
         self.poller.register(self.sub_socket, zmq.POLLIN)
 
         self._last_hb_time = 0
+        self._hb_queue = []
         self._last_adv_time = 0
+        self._adv_queue = []
 
     def _start_bcast_recv(self):
         if self.bcast_host == MULTICAST_GRP:
@@ -576,7 +578,7 @@ class DZMQ(object):
             Name of topic.
         """
         if topic not in self._listeners:
-            return
+            return []
         return [addr for (addr, tstamp) in self._listeners[topic].items()
                 if (time.time() - tstamp) < 2 * HB_REPEAT_PERIOD]
 
@@ -626,16 +628,22 @@ class DZMQ(object):
                     raise ValueError(repr(mtype))
 
         if (time.time() - self._last_hb_time) > HB_REPEAT_PERIOD:
-            if self.publishers:
-                msg = pack_msg({'address': self.address})
-                for p in self.publishers:
-                    topic = p['topic'].encode('utf-8')
-                    self.pub_socket.send_multipart((topic, PUB_HB, msg))
+            self._hb_queue.extend(self.publishers)
             self._last_hb_time = time.time()
 
         elif (time.time() - self._last_adv_time) > ADV_REPEAT_PERIOD:
-            [self._advertise(p) for p in self.publishers]
+            self._adv_queue.extend(self.publishers)
             self._last_adv_time = time.time()
+
+        elif self._hb_queue:
+            p = self._hb_queue.pop()
+            msg = pack_msg({'address': self.address})
+            topic = p['topic'].encode('utf-8')
+            self.pub_socket.send_multipart((topic, PUB_HB, msg))
+
+        elif self._adv_queue:
+            p = self._adv_queue.pop()
+            self._advertise(p)
 
         if timeout > 0 and allow_respin:
             self.spinOnce(timeout=0)
