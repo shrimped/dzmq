@@ -43,16 +43,15 @@ class TestPubSub(object):
             assert msg == payload, msg
 
         self.sub.subscribe('what_what', cb)
-        self.sub.spinOnce()
-
         self.synch('what_what')
         self.pub.publish('what_what', payload)
+        self.sub.spinOnce()
         self.sub.spinOnce()
 
         # check the output
         output = self.get_log()
         assert "Connected to" in output
-        assert "Got message: what_what" in output
+        assert "Got message: what_what" in output, output
 
     def test_multiple_topics(self):
         self.pub.advertise('hey_hey')
@@ -67,6 +66,7 @@ class TestPubSub(object):
         self.synch('hey_hey')
         self.pub.publish('hey_hey', payload)
         self.pub.publish('boo_boo', payload)
+        self.sub.spinOnce()
         self.sub.spinOnce()
 
         # check the output
@@ -95,6 +95,7 @@ class TestPubSub(object):
         self.synch('yeah_yeah')
         self.pub.publish('yeah_yeah', payload)
 
+        self.sub.spinOnce()
         self.sub.spinOnce()
 
         # check the output
@@ -140,7 +141,7 @@ class TestPubSub(object):
         # check the output
         output = self.get_log()
         assert "Connected to" in output
-        assert "Got message: yeah_yeah" in output
+        assert "Got message: yeah_yeah" in output, output
 
         self.sub.spinOnce()
         self.sub.unsubscribe('yeah_yeah')
