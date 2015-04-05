@@ -43,7 +43,6 @@ class TestPubSub(object):
             assert msg == payload, msg
 
         self.sub.subscribe('what_what', cb)
-        self.sub.spinOnce()
 
         self.synch('what_what')
         self.pub.publish('what_what', payload)

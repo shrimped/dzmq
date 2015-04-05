@@ -26,7 +26,7 @@ from .utils import get_log
 
 
 # Defaults and overrides
-ADV_SUB_PORT = 11312
+BCAST_PORT = 11312
 MULTICAST_GRP = '224.1.1.1'
 DZMQ_PORT_KEY = 'DZMQ_BCAST_PORT'
 DZMQ_HOST_KEY = 'DZMQ_BCAST_HOST'
@@ -36,14 +36,9 @@ DZMQ_IFACE_KEY = 'DZMQ_IFACE'
 # Constants
 OP_ADV = 0x01
 OP_SUB = 0x02
-OP_SYN = 0x03
-
-PUB_HB = b'H'
-PUB_MSG = b'M'
 
 UDP_MAX_SIZE = 512
 GUID_LENGTH = 16
-ADV_REPEAT_PERIOD = 1.11
 HB_REPEAT_PERIOD = 1.0
 VERSION = 0x0001
 TOPIC_MAXLENGTH = 192
@@ -203,7 +198,7 @@ class DZMQ(object):
             self.bcast_port = int(os.environ[DZMQ_PORT_KEY])
         else:
             # Take the default
-            self.bcast_port = ADV_SUB_PORT
+            self.bcast_port = BCAST_PORT
         # What's our broadcast host?
         if DZMQ_HOST_KEY in os.environ:
             self.bcast_host = os.environ[DZMQ_HOST_KEY]
@@ -266,10 +261,9 @@ class DZMQ(object):
         self.poller.register(self.bcast_recv, zmq.POLLIN)
         self.poller.register(self.sub_socket, zmq.POLLIN)
 
-        self._last_hb_time = 0
-        self._hb_queue = []
-        self._last_adv_time = 0
+        self._last_hb = 0
         self._adv_queue = []
+        self._sub_queue = []
 
     def _start_bcast_recv(self):
         if self.bcast_host == MULTICAST_GRP:
@@ -345,6 +339,9 @@ class DZMQ(object):
             if sub['topic'] == topic:
                 self._connect_subscriber(adv)
 
+        if topic not in self._listeners:
+            self._listeners[topic] = dict()
+
     def unadvertise(self, topic):
         """
         Unadvertise a topic.
@@ -355,6 +352,7 @@ class DZMQ(object):
             Topic name.
         """
         self.publishers = [p for p in self.publishers if p['topic'] != topic]
+        del self._listeners[topic]
 
     def _subscribe(self, subscriber):
         """
@@ -369,24 +367,6 @@ class DZMQ(object):
         # Flags unused for now
         flags = [0x00] * FLAGS_LENGTH
         msg += struct.pack('<%dB' % FLAGS_LENGTH, *flags)
-        # Null body
-        self.bcast_send.sendto(msg, (self.bcast_host, self.bcast_port))
-
-    def _synch(self, topic, address):
-        """
-        Internal method to pack and broadcast SYN message.
-        """
-        msg = b''
-        msg += struct.pack('<H', VERSION)
-        msg += self.guid.bytes
-        msg += struct.pack('<B', len(topic))
-        msg += topic.encode('utf-8')
-        msg += struct.pack('<B', OP_SYN)
-        # Flags unused for now
-        flags = [0x00] * FLAGS_LENGTH
-        msg += struct.pack('<%dB' % FLAGS_LENGTH, *flags)
-        msg += struct.pack('<H', len(address))
-        msg += address.encode('utf-8')
         msg += struct.pack('<H', len(self.address))
         msg += self.address.encode('utf-8')
         self.bcast_send.sendto(msg, (self.bcast_host, self.bcast_port))
@@ -442,7 +422,7 @@ class DZMQ(object):
         """
         if [p for p in self.publishers if p['topic'] == topic]:
             msg = pack_msg(msg)
-            self.pub_socket.send_multipart((topic.encode('utf-8'), PUB_MSG, msg))
+            self.pub_socket.send_multipart((topic.encode('utf-8'), msg))
 
     def _handle_bcast_recv(self, msg):
         """
@@ -489,27 +469,26 @@ class DZMQ(object):
                     self._connect_subscriber(adv)
 
             elif op == OP_SUB:
-                # The SUB body is NULL
-                # If we're publishing this topic, re-advertise it to allow the
-                # new subscriber to find us.
-                [self._advertise(p) for p in self.publishers
-                 if p['topic'] == topic]
-
-            elif op == OP_SYN:
-                # unpack the SYN body
+                # Unpack the ADV body
+                adv = {}
+                adv['topic'] = topic
+                adv['guid'] = guid
+                adv['flags'] = flags
                 addresslength = struct.unpack_from('<H', data, offset)[0]
                 offset += 2
-                pub_addr = data[offset:offset + addresslength].decode('utf-8')
-                offset += addresslength
-                addresslength = struct.unpack_from('<H', data, offset)[0]
-                offset += 2
-                sub_addr = data[offset:offset + addresslength].decode('utf-8')
+                addr = data[offset:offset + addresslength]
+                adv['address'] = addr.decode('utf-8')
                 offset += addresslength
 
-                if pub_addr == self.address and not sub_addr == self.address:
-                    if topic not in self._listeners:
-                        self._listeners[topic] = dict()
-                    self._listeners[topic][sub_addr] = time.time()
+                # check for a new listener
+                listeners = self._listeners
+                if topic in listeners and addr not in listeners[topic]:
+                    [self._advertise(p) for p in self.publishers
+                     if p['topic'] == topic]
+
+                # update our listeners
+                if topic in listeners:
+                    listeners[topic][addr] = time.time()
 
             else:
                 self.log.warn('Warning: got unrecognized OP: %d' % op)
@@ -610,40 +589,28 @@ class DZMQ(object):
 
         if items.get(self.sub_socket, None) == zmq.POLLIN:
             # Get the message (assuming that we get it all in one read)
-            topic, mtype, msg = self.sub_socket.recv_multipart()
+            topic, msg = self.sub_socket.recv_multipart()
             topic = topic.decode('utf-8')
 
             msg = unpack_msg(msg)
 
             subs = [s for s in self.subscribers if s['topic'] == topic]
             if subs:
-                if mtype == PUB_HB:
-                    self._synch(topic, msg['address'])
-                elif mtype == PUB_MSG:
-                    if len(msg) == 1 and '___payload__' in msg:
-                        msg = msg['___payload__']
-                    [s['cb'](msg) for s in subs]
-                    self.log.debug('Got message: %s' % topic)
-                else:
-                    raise ValueError(repr(mtype))
+                if len(msg) == 1 and '___payload__' in msg:
+                    msg = msg['___payload__']
+                [s['cb'](msg) for s in subs]
+                self.log.debug('Got message: %s' % topic)
 
-        if (time.time() - self._last_hb_time) > HB_REPEAT_PERIOD:
-            self._hb_queue.extend(self.publishers)
-            self._last_hb_time = time.time()
-
-        elif (time.time() - self._last_adv_time) > ADV_REPEAT_PERIOD:
+        if (time.time() - self._last_hb) > HB_REPEAT_PERIOD:
             self._adv_queue.extend(self.publishers)
-            self._last_adv_time = time.time()
+            self._sub_queue.extend(self.subscribers)
+            self._last_hb = time.time()
 
-        elif self._hb_queue:
-            p = self._hb_queue.pop()
-            msg = pack_msg({'address': self.address})
-            topic = p['topic'].encode('utf-8')
-            self.pub_socket.send_multipart((topic, PUB_HB, msg))
+        if self._adv_queue and timeout > 0:
+            self._advertise(self._adv_queue.pop())
 
-        elif self._adv_queue:
-            p = self._adv_queue.pop()
-            self._advertise(p)
+        if self._sub_queue and timeout > 0:
+            self._subscribe(self._sub_queue.pop())
 
         if timeout > 0 and allow_respin:
             self.spinOnce(timeout=0)
