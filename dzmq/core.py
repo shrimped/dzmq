@@ -261,6 +261,11 @@ class DZMQ(object):
         self.poller.register(self.bcast_recv, zmq.POLLIN)
         self.poller.register(self.sub_socket, zmq.POLLIN)
 
+        # wait for the pub socket to start up
+        poller = zmq.Poller()
+        poller.register(self.pub_socket, zmq.POLLOUT)
+        poller.poll()
+
         self._last_hb = 0
         self._adv_queue = []
         self._sub_queue = []

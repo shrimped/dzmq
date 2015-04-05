@@ -67,6 +67,7 @@ class TestPubSub(object):
         self.pub.publish('hey_hey', payload)
         self.pub.publish('boo_boo', payload)
         self.sub.spinOnce()
+        self.sub.spinOnce()
 
         # check the output
         output = self.get_log()
@@ -95,6 +96,7 @@ class TestPubSub(object):
         self.pub.publish('yeah_yeah', payload)
 
         self.sub.spinOnce()
+        self.sub.spinOnce()
 
         # check the output
         output = self.get_log()
@@ -117,6 +119,7 @@ class TestPubSub(object):
         self.pub.publish('yeah_yeah', payload)
 
         self.sub.spinOnce()
+        self.sub.spinOnce()
 
         # check the output
         output = self.get_log()
@@ -134,6 +137,7 @@ class TestPubSub(object):
 
         self.synch('yeah_yeah')
         self.pub.publish('yeah_yeah', payload)
+        self.sub.spinOnce()
         self.sub.spinOnce()
 
         # check the output
