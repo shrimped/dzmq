@@ -572,8 +572,8 @@ class DZMQ(object):
         """Add a file-like object to our poller and register a callback
            when ready to read.
         """
-        if hasattr(fid, 'fileno'):
-            fid = fid.fileno()
+        if not hasattr(fid, 'fileno'):
+            raise TypeError('Must have a fileno attr')
         self.poller.poll(fid, zmq.POLLIN)
         self.file_cbs[fid] = cb
 
@@ -600,7 +600,7 @@ class DZMQ(object):
         items = dict(self.poller.poll(timeout))
 
         for (fid, cb) in self.file_cbs.items():
-            if items.get(fid, None) == zmq.POLLIN:
+            if items.get(fid.fileno(), None) == zmq.POLLIN:
                 cb()
 
         if items.get(self.bcast_recv.fileno(), None) == zmq.POLLIN:
