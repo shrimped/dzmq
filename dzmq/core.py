@@ -261,6 +261,8 @@ class DZMQ(object):
         self.poller.register(self.bcast_recv, zmq.POLLIN)
         self.poller.register(self.sub_socket, zmq.POLLIN)
 
+        self.file_cbs = dict()
+
         # wait for the pub socket to start up
         poller = zmq.Poller()
         poller.register(self.pub_socket, zmq.POLLOUT)
@@ -566,7 +568,16 @@ class DZMQ(object):
         return [addr for (addr, tstamp) in self._listeners[topic].items()
                 if (time.time() - tstamp) < 2 * HB_REPEAT_PERIOD]
 
-    def spinOnce(self, timeout=0.001, allow_respin=True):
+    def register_file_cb(self, fid, cb):
+        """Add a file-like object to our poller and register a callback
+           when ready to read.
+        """
+        if hasattr(fid, 'fileno'):
+            fid = fid.fileno()
+        self.poller.poll(fid, zmq.POLLIN)
+        self.file_cbs[fid] = cb
+
+    def spinOnce(self, timeout=0.001):
         """
         Check for incoming messages, invoking callbacks.
 
@@ -588,6 +599,10 @@ class DZMQ(object):
 
         # Look for sockets that are ready to read
         items = dict(self.poller.poll(timeout))
+
+        for (fid, cb) in self.file_cbs.items():
+            if items.get(fid, None) == zmq.POLLIN:
+                cb()
 
         if items.get(self.bcast_recv.fileno(), None) == zmq.POLLIN:
             self._handle_bcast_recv(self.bcast_recv.recvfrom(UDP_MAX_SIZE))
@@ -616,9 +631,6 @@ class DZMQ(object):
 
         if self._sub_queue and timeout > 0:
             self._subscribe(self._sub_queue.pop())
-
-        if timeout > 0 and allow_respin:
-            self.spinOnce(timeout=0)
 
     def spin(self):
         """
