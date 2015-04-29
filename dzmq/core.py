@@ -577,18 +577,17 @@ class DZMQ(object):
         self.poller.poll(fid, zmq.POLLIN)
         self.file_cbs[fid] = cb
 
-    def spinOnce(self, timeout=0.001):
+    def spinOnce(self, timeout=0.01):
         """
-        Check for incoming messages, invoking callbacks.
+        Check for incoming messages, invoking callbacks.  If any items
+        are found, spin again with a timeout of 0 to check for any new
+        messages.
 
         Parameters
         ----------
         timeout : float
             Timeout in seconds. Wait for up to timeout seconds.  For no
             waiting, set timeout=0. To wait forever, set timeout=-1.
-        allow_respin : bool, optional
-            Whether to spin again if timeout > 0 with a timeout of 0 to catch
-            a follow up message in the queue.  This aids in overall throughput.
         """
         if timeout < 0:
             # zmq interprets timeout=None as infinite
