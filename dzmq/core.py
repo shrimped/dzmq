@@ -263,6 +263,7 @@ class DZMQ(object):
 
         self.file_cbs = dict()
         self.sock_cbs = dict()
+        self.idle_cbs = []
 
         # wait for the pub socket to start up
         poller = zmq.Poller()
@@ -607,13 +608,13 @@ class DZMQ(object):
         # Look for sockets that are ready to read
         items = dict(self.poller.poll(timeout))
 
-        for (fid, cb) in self.file_cbs.items():
+        for (fid, fid_cb) in self.file_cbs.items():
             if items.get(fid.fileno(), None) == zmq.POLLIN:
-                cb()
+                fid_cb()
 
-        for (sock, cb) in self.sock_cbs.items():
+        for (sock, sock_cb) in self.sock_cbs.items():
             if items.get(sock, None) == zmq.POLLIN:
-                cb()
+                sock_cb()
 
         if items.get(self.bcast_recv.fileno(), None) == zmq.POLLIN:
             self._handle_bcast_recv(self.bcast_recv.recvfrom(UDP_MAX_SIZE))
@@ -645,6 +646,8 @@ class DZMQ(object):
 
         if items:
             self.spinOnce(timeout=0)
+        else:
+            [cb() for cb in self.idle_cbs]
 
     def spin(self):
         """
@@ -652,7 +655,7 @@ class DZMQ(object):
         """
         try:
             while True:
-                self.spinOnce(0.01)
+                self.spinOnce(0.1)
         except KeyboardInterrupt:
             self.close()
             return
