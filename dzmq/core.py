@@ -632,6 +632,9 @@ class DZMQ(object):
         if self._sub_queue and timeout > 0:
             self._subscribe(self._sub_queue.pop())
 
+        if items:
+            self.spinOnce(timeout=0)
+
     def spin(self):
         """
         Give control to the message event loop.
