@@ -638,8 +638,12 @@ class DZMQ(object):
         """
         Give control to the message event loop.
         """
-        while True:
-            self.spinOnce(0.01)
+        try:
+            while True:
+                self.spinOnce(0.01)
+        except KeyboardInterrupt:
+            self.close()
+            return
 
     def close(self):
         """
