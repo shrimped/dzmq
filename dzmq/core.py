@@ -262,6 +262,7 @@ class DZMQ(object):
         self.poller.register(self.sub_socket, zmq.POLLIN)
 
         self.file_cbs = dict()
+        self.sock_cbs = dict()
 
         # wait for the pub socket to start up
         poller = zmq.Poller()
@@ -574,8 +575,15 @@ class DZMQ(object):
         """
         if not hasattr(fid, 'fileno'):
             raise TypeError('Must have a fileno attr')
-        self.poller.poll(fid, zmq.POLLIN)
+        self.poller.register(fid, zmq.POLLIN)
         self.file_cbs[fid] = cb
+
+    def register_sock_cb(self, sock, cb):
+        """Add a zmq socket to our poller and register a callback
+           when ready to read.
+        """
+        self.poller.register(sock, zmq.POLLIN)
+        self.sock_cbs[sock] = cb
 
     def spinOnce(self, timeout=0.01):
         """
@@ -601,6 +609,10 @@ class DZMQ(object):
 
         for (fid, cb) in self.file_cbs.items():
             if items.get(fid.fileno(), None) == zmq.POLLIN:
+                cb()
+
+        for (sock, cb) in self.sock_cbs.items():
+            if items.get(sock, None) == zmq.POLLIN:
                 cb()
 
         if items.get(self.bcast_recv.fileno(), None) == zmq.POLLIN:
