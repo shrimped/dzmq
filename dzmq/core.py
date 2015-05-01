@@ -13,6 +13,7 @@ import netifaces
 import base64
 import json
 import signal
+import select
 try:
     from bson import Binary, BSON
 except ImportError:
@@ -622,6 +623,14 @@ class DZMQ(object):
         if items.get(self.bcast_recv.fileno(), None) == zmq.POLLIN:
             self._handle_bcast_recv(self.bcast_recv.recvfrom(UDP_MAX_SIZE))
 
+            # these all come in at once, so keep checking for them
+            while 1:
+                r, w, e = select.select([self.bcast_recv], [], [], 0)
+                if r:
+                    self._handle_bcast_recv(self.bcast_recv.recvfrom(UDP_MAX_SIZE))
+                else:
+                    break
+
         if items.get(self.sub_socket, None) == zmq.POLLIN:
             # Get the message (assuming that we get it all in one read)
             topic, msg = self.sub_socket.recv_multipart()
@@ -640,7 +649,7 @@ class DZMQ(object):
             [self._advertise(p) for p in self.publishers]
             [self._subscribe(s) for s in self.subscribers]
 
-        if items:
+        if items and timeout:
             self.spinOnce(timeout=0)
 
     def spin(self):
