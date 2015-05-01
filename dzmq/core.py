@@ -265,9 +265,8 @@ class DZMQ(object):
         self.poller.register(self.bcast_recv, zmq.POLLIN)
         self.poller.register(self.sub_socket, zmq.POLLIN)
 
-        self.file_cbs = dict()
-        self.sock_cbs = dict()
-        self.idle_cbs = dict()
+        self.poll_cbs = dict()
+        self.idle_cbs = []
 
         # wait for the pub socket to start up
         poller = zmq.Poller()
@@ -583,23 +582,16 @@ class DZMQ(object):
         ----------
         cb : callable
             Callback to register.
-        obj : file-like-object or zmq.Socket, optional
-            If given, add object to spinOnce poll loop.  Otherwise,
-            callback when idle.
+        obj : A zmq.Socket or any Python object having a ``fileno()``
+            method that returns a valid file descriptor.  If not given,
+            add call when idle.
         """
         if not obj:
             self.idle_cbs.append(cb)
             return
 
-        if isinstance(obj, zmq.Socket):
-            self.poller.register(obj, zmq.POLLIN)
-            self.sock_cbs.append(obj)
-            return
-
-        if not hasattr(obj, 'fileno') and not isinstance(obj, int):
-            raise TypeError('Object must have a fileno attr')
         self.poller.register(obj, zmq.POLLIN)
-        self.file_cbs[obj] = cb
+        self.poll_cbs[obj] = cb
 
     def spinOnce(self, timeout=0.01):
         """
@@ -623,15 +615,8 @@ class DZMQ(object):
         # Look for sockets that are ready to read
         items = dict(self.poller.poll(timeout))
 
-        for (fid, cb) in self.file_cbs.items():
-            if isinstance(fid, int):
-                if items.get(fid, None) == zmq.POLLIN:
-                    cb()
-            elif items.get(fid.fileno(), None) == zmq.POLLIN:
-                cb()
-
-        for (sock, cb) in self.sock_cbs.items():
-            if items.get(sock, None) == zmq.POLLIN:
+        for (obj, cb) in self.poll_cbs.items():
+            if obj in items or obj.fileno() in items:
                 cb()
 
         if items.get(self.bcast_recv.fileno(), None) == zmq.POLLIN:
@@ -666,7 +651,8 @@ class DZMQ(object):
 
         if items and timeout:
             self.spinOnce(timeout=0)
-        else:
+
+        if not items or timeout:
             [cb() for cb in self.idle_cbs]
 
     def spin(self):
