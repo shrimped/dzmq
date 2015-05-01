@@ -622,7 +622,8 @@ class DZMQ(object):
         if items.get(self.bcast_recv.fileno(), None) == zmq.POLLIN:
             self._handle_bcast_recv()
 
-            # these all come in at once, so keep checking for them
+            # these come in bursts, so keep checking for them
+            # to avoid a context switch
             while 1:
                 r, w, e = select.select([self.bcast_recv], [], [], 0)
                 if r:
@@ -650,7 +651,7 @@ class DZMQ(object):
             [self._subscribe(s) for s in self.subscribers]
 
         if items and timeout:
-            self.spinOnce(timeout=0)
+            self.spinOnce(timeout=0)  # avoid a context switch
 
         if not items or timeout:
             [cb() for cb in self.idle_cbs]
