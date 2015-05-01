@@ -267,6 +267,7 @@ class DZMQ(object):
 
         self.file_cbs = dict()
         self.sock_cbs = dict()
+        self.idle_cbs = dict()
 
         # wait for the pub socket to start up
         poller = zmq.Poller()
@@ -575,21 +576,30 @@ class DZMQ(object):
         return [addr for (addr, tstamp) in self._listeners[topic].items()
                 if (time.time() - tstamp) < 2 * HB_REPEAT_PERIOD]
 
-    def register_file_cb(self, fid, cb):
-        """Add a file-like object to our poller and register a callback
-           when ready to read.
-        """
-        if not hasattr(fid, 'fileno'):
-            raise TypeError('Must have a fileno attr')
-        self.poller.register(fid, zmq.POLLIN)
-        self.file_cbs[fid] = cb
+    def register_cb(self, cb, obj=None):
+        """Register a callback to the spinOnce loop.
 
-    def register_sock_cb(self, sock, cb):
-        """Add a zmq socket to our poller and register a callback
-           when ready to read.
+        Parameters
+        ----------
+        cb : callable
+            Callback to register.
+        obj : file-like-object or zmq.Socket, optional
+            If given, add object to spinOnce poll loop.  Otherwise,
+            callback when idle.
         """
-        self.poller.register(sock, zmq.POLLIN)
-        self.sock_cbs[sock] = cb
+        if not obj:
+            self.idle_cbs.append(cb)
+            return
+
+        if isinstance(obj, zmq.Socket):
+            self.poller.register(obj, zmq.POLLIN)
+            self.sock_cbs.append(obj)
+            return
+
+        if not hasattr(obj, 'fileno'):
+            raise TypeError('Object must have a fileno attr')
+        self.poller.register(obj, zmq.POLLIN)
+        self.file_cbs[obj] = cb
 
     def spinOnce(self, timeout=0.01):
         """
@@ -653,6 +663,8 @@ class DZMQ(object):
 
         if items and timeout:
             self.spinOnce(timeout=0)
+        else:
+            [cb() for cb in self.idle_cbs]
 
     def spin(self):
         """
