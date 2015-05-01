@@ -437,10 +437,11 @@ class DZMQ(object):
             msg = pack_msg(msg)
             self.pub_socket.send_multipart((topic.encode('utf-8'), msg))
 
-    def _handle_bcast_recv(self, msg):
+    def _handle_bcast_recv(self):
         """
         Internal method to handle receipt of broadcast messages.
         """
+        msg = self.bcast_recv.recvfrom(UDP_MAX_SIZE)
         try:
             data, addr = msg
             # Unpack the header
@@ -621,13 +622,13 @@ class DZMQ(object):
                 cb()
 
         if items.get(self.bcast_recv.fileno(), None) == zmq.POLLIN:
-            self._handle_bcast_recv(self.bcast_recv.recvfrom(UDP_MAX_SIZE))
+            self._handle_bcast_recv()
 
             # these all come in at once, so keep checking for them
             while 1:
                 r, w, e = select.select([self.bcast_recv], [], [], 0)
                 if r:
-                    self._handle_bcast_recv(self.bcast_recv.recvfrom(UDP_MAX_SIZE))
+                    self._handle_bcast_recv()
                 else:
                     break
 
@@ -646,6 +647,7 @@ class DZMQ(object):
                 self.log.debug('Got message: %s' % topic)
 
         if (time.time() - self._last_hb) > HB_REPEAT_PERIOD:
+            self._last_hb = time.time()
             [self._advertise(p) for p in self.publishers]
             [self._subscribe(s) for s in self.subscribers]
 
