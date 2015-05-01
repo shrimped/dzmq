@@ -11,11 +11,13 @@ import sys
 import time
 import netifaces
 import base64
-import json
+import signal
+import select
+
 try:
-    from bson import Binary, BSON
+    import ujson as json
 except ImportError:
-    BSON = None
+    import json
 
 try:
     import numpy as np
@@ -62,29 +64,21 @@ def unpack_msg(data):
         Unpacked message.
     """
     def unpack(obj):
-        if not BSON:
-            obj = json.loads(obj.decode('utf-8'))
+        obj = json.loads(obj.decode('utf-8'))
         for (key, value) in obj.items():
             if isinstance(value, dict):
                 if ('shape' in value and 'dtype' in value and 'data' in value
                         and np):
-                    if BSON is None:
-                        value['data'] = base64.b64decode(value['data'])
-                        obj[key] = np.fromstring(value['data'],
-                                                 dtype=value['dtype'])
-                    else:
-                        obj[key] = np.frombuffer(value['data'],
-                                                 dtype=value['dtype'])
+                    value['data'] = base64.b64decode(value['data'])
+                    obj[key] = np.fromstring(value['data'],
+                                             dtype=value['dtype'])
                     obj[key] = obj[key].reshape(value['shape'])
                 else:
                     # Make sure to recurse into sub-dicts
                     obj[key] = unpack(value)
         return obj
 
-    if BSON is None:
-        return unpack(data)
-    else:
-        return unpack(BSON(data).decode())
+    return unpack(data)
 
 
 def pack_msg(obj):
@@ -105,20 +99,14 @@ def pack_msg(obj):
         obj = dict(___payload__=obj)
     for (key, value) in obj.items():
         if np and isinstance(value, np.ndarray):
-            if BSON is None:
-                data = base64.b64encode(value.tobytes()).decode('utf-8')
-            else:
-                data = Binary(value.tobytes())
+            data = base64.b64encode(value.tobytes()).decode('utf-8')
             obj[key] = dict(shape=value.shape,
                             dtype=value.dtype.str,
                             data=data)
         elif isinstance(value, dict):  # Make sure we recurse into sub-dicts
             obj[key] = pack_msg(value)
 
-    if BSON is None:
-        return json.dumps(obj).encode('utf-8')
-    else:
-        return BSON.encode(obj)
+    return json.dumps(obj).encode('utf-8')
 
 
 class DZMQ(object):
@@ -238,6 +226,8 @@ class DZMQ(object):
         self.poller = zmq.Poller()
         self._listeners = defaultdict(dict)
 
+        signal.signal(signal.SIGINT, self._sighandler)
+
         # Set up the one pub and one sub socket that we'll use
         self.pub_socket = self.context.socket(zmq.PUB)
         self.pub_socket_addrs = []
@@ -261,8 +251,7 @@ class DZMQ(object):
         self.poller.register(self.bcast_recv, zmq.POLLIN)
         self.poller.register(self.sub_socket, zmq.POLLIN)
 
-        self.file_cbs = dict()
-        self.sock_cbs = dict()
+        self.poll_cbs = dict()
         self.idle_cbs = []
 
         # wait for the pub socket to start up
@@ -271,8 +260,6 @@ class DZMQ(object):
         poller.poll()
 
         self._last_hb = 0
-        self._adv_queue = []
-        self._sub_queue = []
 
     def _start_bcast_recv(self):
         if self.bcast_host == MULTICAST_GRP:
@@ -288,6 +275,9 @@ class DZMQ(object):
             self.bcast_recv.bind((self.bcast_host, self.bcast_port))
             self.log.info("Opened (%s, %s)" %
                           (self.bcast_host, self.bcast_port))
+
+    def _sighandler(self, sig, frame):
+        self.close()
 
     def _advertise(self, publisher):
         """
@@ -433,10 +423,11 @@ class DZMQ(object):
             msg = pack_msg(msg)
             self.pub_socket.send_multipart((topic.encode('utf-8'), msg))
 
-    def _handle_bcast_recv(self, msg):
+    def _handle_bcast_recv(self):
         """
         Internal method to handle receipt of broadcast messages.
         """
+        msg = self.bcast_recv.recvfrom(UDP_MAX_SIZE)
         try:
             data, addr = msg
             # Unpack the header
@@ -570,21 +561,23 @@ class DZMQ(object):
         return [addr for (addr, tstamp) in self._listeners[topic].items()
                 if (time.time() - tstamp) < 2 * HB_REPEAT_PERIOD]
 
-    def register_file_cb(self, fid, cb):
-        """Add a file-like object to our poller and register a callback
-           when ready to read.
-        """
-        if not hasattr(fid, 'fileno'):
-            raise TypeError('Must have a fileno attr')
-        self.poller.register(fid, zmq.POLLIN)
-        self.file_cbs[fid] = cb
+    def register_cb(self, cb, obj=None):
+        """Register a callback to the spinOnce loop.
 
-    def register_sock_cb(self, sock, cb):
-        """Add a zmq socket to our poller and register a callback
-           when ready to read.
+        Parameters
+        ----------
+        cb : callable
+            Callback to register.
+        obj : A zmq.Socket or any Python object having a ``fileno()``
+            method that returns a valid file descriptor.  If not given,
+            call when idle.
         """
-        self.poller.register(sock, zmq.POLLIN)
-        self.sock_cbs[sock] = cb
+        if not obj:
+            self.idle_cbs.append(cb)
+            return
+
+        self.poller.register(obj, zmq.POLLIN)
+        self.poll_cbs[obj] = cb
 
     def spinOnce(self, timeout=0.01):
         """
@@ -608,16 +601,21 @@ class DZMQ(object):
         # Look for sockets that are ready to read
         items = dict(self.poller.poll(timeout))
 
-        for (fid, fid_cb) in self.file_cbs.items():
-            if items.get(fid.fileno(), None) == zmq.POLLIN:
-                fid_cb()
-
-        for (sock, sock_cb) in self.sock_cbs.items():
-            if items.get(sock, None) == zmq.POLLIN:
-                sock_cb()
+        for (obj, poll_cb) in self.poll_cbs.items():
+            if obj in items or obj.fileno() in items:
+                poll_cb()
 
         if items.get(self.bcast_recv.fileno(), None) == zmq.POLLIN:
-            self._handle_bcast_recv(self.bcast_recv.recvfrom(UDP_MAX_SIZE))
+            self._handle_bcast_recv()
+
+            # these come in bursts, so keep checking for them
+            # to avoid a context switch
+            while 1:
+                r, w, e = select.select([self.bcast_recv], [], [], 0)
+                if r:
+                    self._handle_bcast_recv()
+                else:
+                    break
 
         if items.get(self.sub_socket, None) == zmq.POLLIN:
             # Get the message (assuming that we get it all in one read)
@@ -631,34 +629,25 @@ class DZMQ(object):
                 if len(msg) == 1 and '___payload__' in msg:
                     msg = msg['___payload__']
                 [s['cb'](msg) for s in subs]
-                self.log.debug('Got message: %s' % topic)
+                self.log.debug('Got message: ' + topic)
 
         if (time.time() - self._last_hb) > HB_REPEAT_PERIOD:
-            self._adv_queue.extend(self.publishers)
-            self._sub_queue.extend(self.subscribers)
             self._last_hb = time.time()
+            [self._advertise(p) for p in self.publishers]
+            [self._subscribe(s) for s in self.subscribers]
 
-        if self._adv_queue and timeout > 0:
-            self._advertise(self._adv_queue.pop())
+        if items and timeout:
+            self.spinOnce(timeout=0)  # avoid a context switch
 
-        if self._sub_queue and timeout > 0:
-            self._subscribe(self._sub_queue.pop())
-
-        if items:
-            self.spinOnce(timeout=0)
-        else:
+        if not items or timeout:
             [cb() for cb in self.idle_cbs]
 
     def spin(self):
         """
         Give control to the message event loop.
         """
-        try:
-            while True:
-                self.spinOnce(0.1)
-        except KeyboardInterrupt:
-            self.close()
-            return
+        while True:
+            self.spinOnce(0.01)
 
     def close(self):
         """
