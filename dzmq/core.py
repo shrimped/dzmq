@@ -644,7 +644,7 @@ class DZMQ(object):
                 if len(msg) == 1 and '___payload__' in msg:
                     msg = msg['___payload__']
                 [s['cb'](msg) for s in subs]
-                self.log.debug('Got message: %s' % topic)
+                self.log.debug('Got message: ' + topic)
 
         if (time.time() - self._last_hb) > HB_REPEAT_PERIOD:
             self._last_hb = time.time()
