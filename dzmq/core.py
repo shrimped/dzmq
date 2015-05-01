@@ -596,7 +596,7 @@ class DZMQ(object):
             self.sock_cbs.append(obj)
             return
 
-        if not hasattr(obj, 'fileno'):
+        if not hasattr(obj, 'fileno') and not isinstance(obj, int):
             raise TypeError('Object must have a fileno attr')
         self.poller.register(obj, zmq.POLLIN)
         self.file_cbs[obj] = cb
@@ -624,7 +624,10 @@ class DZMQ(object):
         items = dict(self.poller.poll(timeout))
 
         for (fid, cb) in self.file_cbs.items():
-            if items.get(fid.fileno(), None) == zmq.POLLIN:
+            if isinstance(fid, int):
+                if items.get(fid, None) == zmq.POLLIN:
+                    cb()
+            elif items.get(fid.fileno(), None) == zmq.POLLIN:
                 cb()
 
         for (sock, cb) in self.sock_cbs.items():
