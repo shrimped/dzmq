@@ -12,6 +12,8 @@ import time
 import netifaces
 import base64
 import json
+import signal
+import threading
 try:
     from bson import Binary, BSON
 except ImportError:
@@ -160,7 +162,6 @@ class DZMQ(object):
         self.context = context or zmq.Context.instance()
         self.log = log or get_log()
         self.guid = uuid.uuid4()
-
         atexit.register(self.close)
 
         if DEBUG:
@@ -238,6 +239,12 @@ class DZMQ(object):
         self.poller = zmq.Poller()
         self._listeners = defaultdict(dict)
 
+        # TODO: figure out what happens with multiple classes
+        self.adv_timer = None
+        self.bcast_lock = threading.Lock()
+        self._advertisement_repeater()
+        signal.signal(signal.SIGINT, self._sighandler)
+
         # Set up the one pub and one sub socket that we'll use
         self.pub_socket = self.context.socket(zmq.PUB)
         self.pub_socket_addrs = []
@@ -269,9 +276,8 @@ class DZMQ(object):
         poller.register(self.pub_socket, zmq.POLLOUT)
         poller.poll()
 
-        self._last_hb = 0
-        self._adv_queue = []
-        self._sub_queue = []
+    def _sighandler(self, sig, frame):
+        self.close()
 
     def _start_bcast_recv(self):
         if self.bcast_host == MULTICAST_GRP:
@@ -310,7 +316,9 @@ class DZMQ(object):
             mymsg = msg
             mymsg += struct.pack('<H', len(addr))
             mymsg += addr.encode('utf-8')
-            self.bcast_send.sendto(mymsg, (self.bcast_host, self.bcast_port))
+            with self.bcast_lock:
+                self.bcast_send.sendto(mymsg, (self.bcast_host,
+                                               self.bcast_port))
 
     def advertise(self, topic):
         """
@@ -350,6 +358,13 @@ class DZMQ(object):
         if topic not in self._listeners:
             self._listeners[topic] = dict()
 
+    def _advertisement_repeater(self):
+        [self._advertise(p) for p in self.publishers]
+        [self._subscribe(s) for s in self.subscribers]
+        self.adv_timer = threading.Timer(HB_REPEAT_PERIOD,
+                                         self._advertisement_repeater)
+        self.adv_timer.start()
+
     def unadvertise(self, topic):
         """
         Unadvertise a topic.
@@ -377,7 +392,8 @@ class DZMQ(object):
         msg += struct.pack('<%dB' % FLAGS_LENGTH, *flags)
         msg += struct.pack('<H', len(self.address))
         msg += self.address.encode('utf-8')
-        self.bcast_send.sendto(msg, (self.bcast_host, self.bcast_port))
+        with self.bcast_lock:
+            self.bcast_send.sendto(msg, (self.bcast_host, self.bcast_port))
 
     def subscribe(self, topic, cb):
         """
@@ -632,17 +648,6 @@ class DZMQ(object):
                 [s['cb'](msg) for s in subs]
                 self.log.debug('Got message: %s' % topic)
 
-        if (time.time() - self._last_hb) > HB_REPEAT_PERIOD:
-            self._adv_queue.extend(self.publishers)
-            self._sub_queue.extend(self.subscribers)
-            self._last_hb = time.time()
-
-        if self._adv_queue and timeout > 0:
-            self._advertise(self._adv_queue.pop())
-
-        if self._sub_queue and timeout > 0:
-            self._subscribe(self._sub_queue.pop())
-
         if items:
             self.spinOnce(timeout=0)
 
@@ -650,17 +655,14 @@ class DZMQ(object):
         """
         Give control to the message event loop.
         """
-        try:
-            while True:
-                self.spinOnce(0.01)
-        except KeyboardInterrupt:
-            self.close()
-            return
+        while 1:
+            self.spinOnce(0.01)
 
     def close(self):
         """
         Close the DZMQ Interface and all of its ports.
         """
+        self.adv_timer.cancel()
         self.bcast_recv.close()
         self.bcast_send.close()
         self.pub_socket.close()
