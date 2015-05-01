@@ -584,7 +584,7 @@ class DZMQ(object):
             Callback to register.
         obj : A zmq.Socket or any Python object having a ``fileno()``
             method that returns a valid file descriptor.  If not given,
-            add call when idle.
+            call when idle.
         """
         if not obj:
             self.idle_cbs.append(cb)
@@ -615,9 +615,9 @@ class DZMQ(object):
         # Look for sockets that are ready to read
         items = dict(self.poller.poll(timeout))
 
-        for (obj, cb) in self.poll_cbs.items():
+        for (obj, poll_cb) in self.poll_cbs.items():
             if obj in items or obj.fileno() in items:
-                cb()
+                poll_cb()
 
         if items.get(self.bcast_recv.fileno(), None) == zmq.POLLIN:
             self._handle_bcast_recv()
