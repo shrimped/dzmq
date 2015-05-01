@@ -11,13 +11,13 @@ import sys
 import time
 import netifaces
 import base64
-import json
 import signal
 import select
+
 try:
-    from bson import Binary, BSON
+    import ujson as json
 except ImportError:
-    BSON = None
+    import json
 
 try:
     import numpy as np
@@ -64,29 +64,21 @@ def unpack_msg(data):
         Unpacked message.
     """
     def unpack(obj):
-        if not BSON:
-            obj = json.loads(obj.decode('utf-8'))
+        obj = json.loads(obj.decode('utf-8'))
         for (key, value) in obj.items():
             if isinstance(value, dict):
                 if ('shape' in value and 'dtype' in value and 'data' in value
                         and np):
-                    if BSON is None:
-                        value['data'] = base64.b64decode(value['data'])
-                        obj[key] = np.fromstring(value['data'],
-                                                 dtype=value['dtype'])
-                    else:
-                        obj[key] = np.frombuffer(value['data'],
-                                                 dtype=value['dtype'])
+                    value['data'] = base64.b64decode(value['data'])
+                    obj[key] = np.fromstring(value['data'],
+                                             dtype=value['dtype'])
                     obj[key] = obj[key].reshape(value['shape'])
                 else:
                     # Make sure to recurse into sub-dicts
                     obj[key] = unpack(value)
         return obj
 
-    if BSON is None:
-        return unpack(data)
-    else:
-        return unpack(BSON(data).decode())
+    return unpack(data)
 
 
 def pack_msg(obj):
@@ -107,20 +99,14 @@ def pack_msg(obj):
         obj = dict(___payload__=obj)
     for (key, value) in obj.items():
         if np and isinstance(value, np.ndarray):
-            if BSON is None:
-                data = base64.b64encode(value.tobytes()).decode('utf-8')
-            else:
-                data = Binary(value.tobytes())
+            data = base64.b64encode(value.tobytes()).decode('utf-8')
             obj[key] = dict(shape=value.shape,
                             dtype=value.dtype.str,
                             data=data)
         elif isinstance(value, dict):  # Make sure we recurse into sub-dicts
             obj[key] = pack_msg(value)
 
-    if BSON is None:
-        return json.dumps(obj).encode('utf-8')
-    else:
-        return BSON.encode(obj)
+    return json.dumps(obj).encode('utf-8')
 
 
 class DZMQ(object):
