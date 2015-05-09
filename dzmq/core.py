@@ -40,7 +40,7 @@ OP_ADV = 0x01
 OP_SUB = 0x02
 
 UDP_MAX_SIZE = 512
-GUID_LENGTH = 16
+GUID_LENGTH = 8
 HB_REPEAT_PERIOD = 1.0
 VERSION = 0x0001
 TOPIC_MAXLENGTH = 192
@@ -110,7 +110,7 @@ def pack_msg(obj):
 
 
 # TODO: 
-# broadcast has a list of brodcast messages, instead of composing them 
+# x - broadcast has a list of brodcast messages, instead of composing them 
 # x- remove inproc in favor of local callbacks 
 # bring back the raw message send/recv
 
@@ -186,7 +186,7 @@ class Broadcast(object):
         if not msg:
             msg = b''
             msg += struct.pack('<H', VERSION)
-            msg += self.guid.bytes
+            msg += self.guid.bytes[:GUID_LENGTH]
             msg += struct.pack('<B', len(topic))
             msg += topic.encode('utf-8')
             msg += struct.pack('<B', OP_ADV)
@@ -203,7 +203,7 @@ class Broadcast(object):
         if not msg:
             msg = b''
             msg += struct.pack('<H', VERSION)
-            msg += self.guid.bytes
+            msg += self.guid.bytes[:GUID_LENGTH]
             msg += struct.pack('<B', len(topic))
             msg += topic.encode('utf-8')
             msg += struct.pack('<B', OP_SUB)
@@ -229,13 +229,10 @@ class Broadcast(object):
                 self.log.warn('Warning: mismatched protocol versions: %d != %d'
                               % (version, VERSION))
             offset += 2
-            guid_int = 0
-            for i in range(0, GUID_LENGTH):
-                guid_int += struct.unpack_from('<B', data, offset)[0] << 8 * i
-                offset += 1
-            guid = uuid.UUID(int=guid_int)
-            if guid == self.guid:
+            guid = data[offset: offset + GUID_LENGTH]
+            if guid == self.guid.bytes[:GUID_LENGTH]:
                 return
+            offset += GUID_LENGTH
 
             topiclength = struct.unpack_from('<B', data, offset)[0]
             offset += 1
