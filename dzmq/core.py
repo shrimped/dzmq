@@ -38,14 +38,7 @@ ADDRESS_MAXLENGTH = 267
 DEBUG = False
 
 
-
-# TODO: 
-# x - broadcast has a list of brodcast messages, instead of composing them 
-# x- remove inproc in favor of local callbacks 
-# bring back the raw message send/recv
-
-
-class Broadcast(object):
+class Broadcaster(object):
 
     def __init__(self, log):
         self.log = log
@@ -106,13 +99,13 @@ class Broadcast(object):
             self.sock.setsockopt(socket.IPPROTO_IP,
                                        socket.IP_ADD_MEMBERSHIP,
                                        mreq)
-        self.advert_cache = dict()
-        self.sub_cache = dict()
+        self.pubs = dict()
+        self.subs = dict()
         self.log.info("Opened (%s, %s)" %
                       (self.host, self.port))
 
     def advertise(self, topic, address):
-        msg = self.advert_cache.get((topic, address), None)
+        msg = self.pubs.get(topic, None)
         if not msg:
             msg = b''
             msg += struct.pack('<H', VERSION)
@@ -125,11 +118,11 @@ class Broadcast(object):
             msg += struct.pack('<%dB' % (FLAGS_LENGTH), *flags)
             msg += struct.pack('<H', len(address))
             msg += address.encode('utf-8')
-            self.advert_cache[(topic, address)] = msg
+            self.pubs[topic] = msg
         self.sock.sendto(msg, (self.host, self.port))
 
     def subscribe(self, topic, address):
-        msg = self.sub_cache.get((topic, address), None)
+        msg = self.subs.get(topic, None)
         if not msg:
             msg = b''
             msg += struct.pack('<H', VERSION)
@@ -142,7 +135,7 @@ class Broadcast(object):
             msg += struct.pack('<%dB' % FLAGS_LENGTH, *flags)
             msg += struct.pack('<H', len(address))
             msg += address.encode('utf-8')
-            self.sub_cache[(topic, address)] = msg
+            self.subs[topic] = msg
         self.sock.sendto(msg, (self.host, self.port))
 
     def handle_recv(self):
@@ -211,6 +204,38 @@ class Broadcast(object):
             self.log.warn('Warning: exception while processing SUB or ADV '
                           'message: %s' % e)
 
+    def unsubscribe(self, topic):
+        self.subs.pop(topic, None)
+
+    def unadvertise(self, topic):
+        self.pubs.pop(topic, None)
+
+    def send_all(self):
+        for msg in self.pubs.values():
+            self.sock.sendto(msg, (self.host, self.port))
+
+        for msg in self.subs.values():
+            self.sock.sendto(msg, (self.host, self.port))
+
+
+class Publisher(object):
+
+    def __init__(self, socket, log):
+        self.sock = socket
+        self.log = log
+        self.sock.setsockopt(zmq.LINGER, 0)
+        self.listeners = defaultdict(dict)
+
+    def advertise(self, topic):
+        self.listeners[topic] = dict()
+
+    def unadvertise(self, topic):
+        self.listeners.pop(topic, None)
+
+    def publish(self, topic, msg):
+        packed_msg = pickle.dumps(msg, protocol=-1)
+        self.sock.send_multipart((topic.encode('utf-8'), packed_msg))
+
 
 class DZMQ(object):
 
@@ -257,33 +282,31 @@ class DZMQ(object):
             self.log.setLevel(logging.DEBUG)
 
         self.address = address
-        self._broadcast = Broadcast(self.log)
+        self._broadcast = Broadcaster(self.log)
 
         # Bookkeeping (which should be cleaned up)
-        self.publishers = []
         self.subscribers = []
         self.sub_connections = []
         self.poller = zmq.Poller()
-        self._listeners = defaultdict(dict)
 
         signal.signal(signal.SIGINT, self._sighandler)
 
         # Set up the one pub and one sub socket that we'll use
-        self.pub_socket = self.context.socket(zmq.PUB)
-        self.pub_socket_addrs = []
+        pub_socket = self.context.socket(zmq.PUB)
         if not self.address:
             tcp_addr = 'tcp://%s' % (self._broadcast.ipaddr)
-            tcp_port = self.pub_socket.bind_to_random_port(tcp_addr)
+            tcp_port = pub_socket.bind_to_random_port(tcp_addr)
             tcp_addr += ':%d' % (tcp_port)
             self.address = tcp_addr
         else:
-            self.pub_socket.bind(self.address)
+            pub_socket.bind(self.address)
 
         if len(self.address) > ADDRESS_MAXLENGTH:
             raise Exception('Address length %d exceeds maximum %d'
                             % (len(self.address), ADDRESS_MAXLENGTH))
-        self.pub_socket_addrs.append(self.address)
-        self.pub_socket.setsockopt(zmq.LINGER, 0)
+
+        self._publisher = Publisher(pub_socket, self.log)
+
         self.sub_socket = self.context.socket(zmq.SUB)
         self.sub_socket.setsockopt(zmq.LINGER, 0)
         self.sub_socket_addrs = []
@@ -296,7 +319,7 @@ class DZMQ(object):
 
         # wait for the pub socket to start up
         poller = zmq.Poller()
-        poller.register(self.pub_socket, zmq.POLLOUT)
+        poller.register(pub_socket, zmq.POLLOUT)
         poller.poll()
 
         self._last_hb = 0
@@ -317,15 +340,9 @@ class DZMQ(object):
         if len(topic) > TOPIC_MAXLENGTH:
             raise Exception('Topic length %d exceeds maximum %d'
                             % (len(topic), TOPIC_MAXLENGTH))
-        publisher = {}
-        publisher['socket'] = self.pub_socket
 
-        address = [a for a in self.pub_socket_addrs
-                   if a.startswith(('tcp', 'ipc'))][0]
-        publisher['addr'] = address
-        publisher['topic'] = topic
-        self.publishers.append(publisher)
-        self._broadcast.advertise(publisher['topic'], publisher['addr'])
+        self._broadcast.advertise(topic, self.address)
+        self._publisher.advertise(topic)
 
         if topic not in self._local_subs:
             self._local_subs[topic] = []
@@ -334,9 +351,6 @@ class DZMQ(object):
         for sub in self.subscribers:
             if sub['topic'] == topic:
                 self._local_subs[topic].append(sub)
-
-        if topic not in self._listeners:
-            self._listeners[topic] = dict()
 
     def unadvertise(self, topic):
         """
@@ -347,8 +361,8 @@ class DZMQ(object):
         topic : str
             Topic name.
         """
-        self.publishers = [p for p in self.publishers if p['topic'] != topic]
-        del self._listeners[topic]
+        self._publisher.unadvertise(topic)
+        self._broadcast.unadvertise(topic)
 
     def subscribe(self, topic, cb):
         """
@@ -394,9 +408,10 @@ class DZMQ(object):
         msg : str or dict
             Mesage to send.
         """
-        if [p for p in self.publishers if p['topic'] == topic]:
-            packed_msg = pickle.dumps(msg, protocol=-1)
-            self.pub_socket.send_multipart((topic.encode('utf-8'), packed_msg))
+        if topic not in self._publisher.listeners:
+            return
+
+        self._publisher.publish(topic, msg)
         for sub in self._local_subs[topic]:
             sub['cb'](msg)
 
@@ -441,9 +456,10 @@ class DZMQ(object):
         topic : str
             Name of topic.
         """
-        if topic not in self._listeners:
+        listeners = self._publisher.listeners
+        if topic not in listeners:
             return []
-        return [addr for (addr, tstamp) in self._listeners[topic].items()
+        return [addr for (addr, tstamp) in listeners[topic].items()
                 if (time.time() - tstamp) < 2 * HB_REPEAT_PERIOD]
 
     def register_cb(self, cb, obj=None):
@@ -474,14 +490,10 @@ class DZMQ(object):
         addr = data['addr']
 
         if data['type'] == 'sub':
-            # check for a new listener
-            listeners = self._listeners
-            if topic in listeners and addr not in listeners[topic]:
-                [self._broadcast.advertise(p['topic'], p['addr'])
-                 for p in self.publishers if p['topic'] == topic]
-
-            # update our listeners
+            listeners = self._publisher.listeners
             if topic in listeners:
+                if addr not in listeners[topic]:
+                    self._broadcast.advertise(topic, self.address)
                 listeners[topic][addr] = time.time()
 
         elif data['type'] == 'adv':
@@ -535,10 +547,7 @@ class DZMQ(object):
 
         if (time.time() - self._last_hb) > HB_REPEAT_PERIOD:
             self._last_hb = time.time()
-            [self._broadcast.advertise(p['topic'], p['addr'])
-             for p in self.publishers]
-            [self._broadcast.subscribe(s['topic'], self.address)
-             for s in self.subscribers]
+            self._broadcast.send_all()
 
         if items and timeout:
             self.spinOnce(timeout=0)  # avoid a context switch
@@ -558,7 +567,7 @@ class DZMQ(object):
         Close the DZMQ Interface and all of its ports.
         """
         self._broadcast.sock.close()
-        self.pub_socket.close()
+        self._publisher.sock.close()
         self.sub_socket.close()
 
 # Stolen from rosgraph
