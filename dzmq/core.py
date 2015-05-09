@@ -370,12 +370,6 @@ class DZMQ(object):
     def _sighandler(self, sig, frame):
         self.close()
 
-    def _advertise(self, publisher):
-        """
-        Internal method to pack and broadcast ADV message.
-        """
-        self._broadcast.advertise(publisher['topic'], publisher['addr'])
-
     def advertise(self, topic):
         """
         Advertise the given topic.  Do this before calling publish().
@@ -396,7 +390,7 @@ class DZMQ(object):
         publisher['addr'] = address
         publisher['topic'] = topic
         self.publishers.append(publisher)
-        self._advertise(publisher)
+        self._broadcast.advertise(publisher['topic'], publisher['addr'])
 
         if topic not in self._local_subs:
             self._local_subs[topic] = []
@@ -421,12 +415,6 @@ class DZMQ(object):
         self.publishers = [p for p in self.publishers if p['topic'] != topic]
         del self._listeners[topic]
 
-    def _subscribe(self, subscriber):
-        """
-        Internal method to pack and broadcast SUB message.
-        """
-        self._broadcast.subscribe(subscriber['topic'], self.address)
-
     def subscribe(self, topic, cb):
         """
         Subscribe to the given topic.  Received messages will be passed to
@@ -442,7 +430,7 @@ class DZMQ(object):
         subscriber['topic'] = topic
         subscriber['cb'] = cb
         self.subscribers.append(subscriber)
-        self._subscribe(subscriber)
+        self._broadcast.subscribe(subscriber['topic'], self.address)
 
         # Also connect to internal publishers, if there are any
         if topic in self._local_subs:
@@ -554,8 +542,8 @@ class DZMQ(object):
             # check for a new listener
             listeners = self._listeners
             if topic in listeners and addr not in listeners[topic]:
-                [self._advertise(p) for p in self.publishers
-                 if p['topic'] == topic]
+                [self._broadcast.advertise(p['topic'], p['addr'])
+                 for p in self.publishers if p['topic'] == topic]
 
             # update our listeners
             if topic in listeners:
@@ -596,7 +584,6 @@ class DZMQ(object):
         if items.get(self._broadcast.sock.fileno(), None) == zmq.POLLIN:
             self._handle_bcast_recv()
 
-
             # these come in bursts, so keep checking for them
             # to avoid a context switch
             while 1:
@@ -622,8 +609,10 @@ class DZMQ(object):
 
         if (time.time() - self._last_hb) > HB_REPEAT_PERIOD:
             self._last_hb = time.time()
-            [self._advertise(p) for p in self.publishers]
-            [self._subscribe(s) for s in self.subscribers]
+            [self._broadcast.advertise(p['topic'], p['addr'])
+             for p in self.publishers]
+            [self._broadcast.subscribe(s['topic'], self.address)
+             for s in self.subscribers]
 
         if items and timeout:
             self.spinOnce(timeout=0)  # avoid a context switch
