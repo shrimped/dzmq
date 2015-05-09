@@ -119,6 +119,7 @@ class Broadcast(object):
 
     def __init__(self, log):
         self.log = log
+        self.guid = uuid.uuid4()
         # Determine network addresses.  Look at environment variables, and
         # fall back on defaults.
 
@@ -178,8 +179,102 @@ class Broadcast(object):
         self.log.info("Opened (%s, %s)" %
                       (self.host, self.port))
 
-    def send(self, msg):
+    def advertise(self, topic, address):
+        msg = b''
+        msg += struct.pack('<H', VERSION)
+        msg += self.guid.bytes
+        msg += struct.pack('<B', len(topic))
+        msg += topic.encode('utf-8')
+        msg += struct.pack('<B', OP_ADV)
+        # Flags unused for now
+        flags = [0x00] * FLAGS_LENGTH
+        msg += struct.pack('<%dB' % (FLAGS_LENGTH), *flags)
+        msg += struct.pack('<H', len(address))
+        msg += address.encode('utf-8')
         self.sock.sendto(msg, (self.host, self.port))
+
+    def subscribe(self, topic, address):
+        msg = b''
+        msg += struct.pack('<H', VERSION)
+        msg += self.guid.bytes
+        msg += struct.pack('<B', len(topic))
+        msg += topic.encode('utf-8')
+        msg += struct.pack('<B', OP_SUB)
+        # Flags unused for now
+        flags = [0x00] * FLAGS_LENGTH
+        msg += struct.pack('<%dB' % FLAGS_LENGTH, *flags)
+        msg += struct.pack('<H', len(address))
+        msg += address.encode('utf-8')
+        self.sock.sendto(msg, (self.host, self.port))
+
+    def handle_recv(self):
+        """
+        Internal method to handle receipt of broadcast messages.
+        """
+        msg = self.sock.recvfrom(UDP_MAX_SIZE)
+        try:
+            data, addr = msg
+            # Unpack the header
+            offset = 0
+            version = struct.unpack_from('<H', data, offset)[0]
+            if version != VERSION:
+                self.log.warn('Warning: mismatched protocol versions: %d != %d'
+                              % (version, VERSION))
+            offset += 2
+            guid_int = 0
+            for i in range(0, GUID_LENGTH):
+                guid_int += struct.unpack_from('<B', data, offset)[0] << 8 * i
+                offset += 1
+            guid = uuid.UUID(int=guid_int)
+            if guid == self.guid:
+                return
+
+            topiclength = struct.unpack_from('<B', data, offset)[0]
+            offset += 1
+            topic = data[offset:offset + topiclength].decode('utf-8')
+            offset += topiclength
+            op = struct.unpack_from('<B', data, offset)[0]
+            offset += 1
+            flags = struct.unpack_from('<%dB' % FLAGS_LENGTH, data, offset)
+            offset += FLAGS_LENGTH
+
+            if op == OP_ADV:
+                # Unpack the ADV body
+                adv = {}
+                adv['topic'] = topic
+                adv['type'] = 'adv'
+                adv['guid'] = guid
+                adv['flags'] = flags
+                addresslength = struct.unpack_from('<H', data, offset)[0]
+                offset += 2
+                addr = data[offset:offset + addresslength]
+                adv['addr'] = addr.decode('utf-8')
+                offset += addresslength
+
+                return adv
+
+            elif op == OP_SUB:
+                # Unpack the sub body
+                sub = {}
+                sub['type'] = 'sub'
+                sub['topic'] = topic
+                sub['guid'] = guid
+                sub['flags'] = flags
+                addresslength = struct.unpack_from('<H', data, offset)[0]
+                offset += 2
+                addr = data[offset:offset + addresslength]
+                sub['addr'] = addr.decode('utf-8')
+                offset += addresslength
+
+                return sub
+
+            else:
+                self.log.warn('Warning: got unrecognized OP: %d' % op)
+
+        except Exception as e:
+            self.log.exception(e)
+            self.log.warn('Warning: exception while processing SUB or ADV '
+                          'message: %s' % e)
 
 
 class DZMQ(object):
@@ -220,7 +315,6 @@ class DZMQ(object):
         """
         self.context = context or zmq.Context.instance()
         self.log = log or get_log()
-        self.guid = uuid.uuid4()
 
         atexit.register(self.close)
 
@@ -280,18 +374,7 @@ class DZMQ(object):
         """
         Internal method to pack and broadcast ADV message.
         """
-        msg = b''
-        msg += struct.pack('<H', VERSION)
-        msg += self.guid.bytes
-        msg += struct.pack('<B', len(publisher['topic']))
-        msg += publisher['topic'].encode('utf-8')
-        msg += struct.pack('<B', OP_ADV)
-        # Flags unused for now
-        flags = [0x00] * FLAGS_LENGTH
-        msg += struct.pack('<%dB' % (FLAGS_LENGTH), *flags)
-        msg += struct.pack('<H', len(publisher['address']))
-        msg += publisher['address'].encode('utf-8')
-        self._broadcast.send(msg)
+        self._broadcast.advertise(publisher['topic'], publisher['addr'])
 
     def advertise(self, topic):
         """
@@ -310,7 +393,7 @@ class DZMQ(object):
 
         address = [a for a in self.pub_socket_addrs
                    if a.startswith(('tcp', 'ipc'))][0]
-        publisher['address'] = address
+        publisher['addr'] = address
         publisher['topic'] = topic
         self.publishers.append(publisher)
         self._advertise(publisher)
@@ -342,18 +425,7 @@ class DZMQ(object):
         """
         Internal method to pack and broadcast SUB message.
         """
-        msg = b''
-        msg += struct.pack('<H', VERSION)
-        msg += self.guid.bytes
-        msg += struct.pack('<B', len(subscriber['topic']))
-        msg += subscriber['topic'].encode('utf-8')
-        msg += struct.pack('<B', OP_SUB)
-        # Flags unused for now
-        flags = [0x00] * FLAGS_LENGTH
-        msg += struct.pack('<%dB' % FLAGS_LENGTH, *flags)
-        msg += struct.pack('<H', len(self.address))
-        msg += self.address.encode('utf-8')
-        self._broadcast.send(msg)
+        self._broadcast.subscribe(subscriber['topic'], self.address)
 
     def subscribe(self, topic, cb):
         """
@@ -405,95 +477,10 @@ class DZMQ(object):
         for sub in self._local_subs[topic]:
             sub['cb'](msg)
 
-    def _handle_bcast_recv(self):
-        """
-        Internal method to handle receipt of broadcast messages.
-        """
-        msg = self._broadcast.sock.recvfrom(UDP_MAX_SIZE)
-        try:
-            data, addr = msg
-            # Unpack the header
-            offset = 0
-            version = struct.unpack_from('<H', data, offset)[0]
-            if version != VERSION:
-                self.log.warn('Warning: mismatched protocol versions: %d != %d'
-                              % (version, VERSION))
-            offset += 2
-            guid_int = 0
-            for i in range(0, GUID_LENGTH):
-                guid_int += struct.unpack_from('<B', data, offset)[0] << 8 * i
-                offset += 1
-            guid = uuid.UUID(int=guid_int)
-            topiclength = struct.unpack_from('<B', data, offset)[0]
-            offset += 1
-            topic = data[offset:offset + topiclength].decode('utf-8')
-            offset += topiclength
-            op = struct.unpack_from('<B', data, offset)[0]
-            offset += 1
-            flags = struct.unpack_from('<%dB' % FLAGS_LENGTH, data, offset)
-            offset += FLAGS_LENGTH
-
-            if op == OP_ADV:
-                # Unpack the ADV body
-                adv = {}
-                adv['topic'] = topic
-                adv['guid'] = guid
-                adv['flags'] = flags
-                addresslength = struct.unpack_from('<H', data, offset)[0]
-                offset += 2
-                addr = data[offset:offset + addresslength]
-                adv['address'] = addr.decode('utf-8')
-                offset += addresslength
-
-                # Are we interested in this topic?
-                if [s for s in self.subscribers if s['topic'] == adv['topic']]:
-                    # Yes, we're interested; make a connection
-                    self._connect_subscriber(adv)
-
-            elif op == OP_SUB:
-                # Unpack the ADV body
-                adv = {}
-                adv['topic'] = topic
-                adv['guid'] = guid
-                adv['flags'] = flags
-                addresslength = struct.unpack_from('<H', data, offset)[0]
-                offset += 2
-                addr = data[offset:offset + addresslength]
-                adv['address'] = addr.decode('utf-8')
-                offset += addresslength
-
-                # check for a new listener
-                listeners = self._listeners
-                if topic in listeners and addr not in listeners[topic]:
-                    [self._advertise(p) for p in self.publishers
-                     if p['topic'] == topic]
-
-                # update our listeners
-                if topic in listeners:
-                    listeners[topic][addr] = time.time()
-
-            else:
-                self.log.warn('Warning: got unrecognized OP: %d' % op)
-
-        except Exception as e:
-            self.log.exception(e)
-            self.log.warn('Warning: exception while processing SUB or ADV '
-                          'message: %s' % e)
-
     def _connect_subscriber(self, adv):
         """
         Internal method to connect to a publisher.
         """
-        # Choose the best address to use. 
-        if adv['address'].startswith(('tcp', 'ipc')):
-            if adv['guid'] == self.guid:
-                # Us; skip it
-                return
-        else:
-            self.log.warn('Warning: ignoring unknown address type: %s' %
-                          (adv['address']))
-            return
-
         # Are we already connected to this publisher for this topic?
         if [c for c in self.sub_connections
                 if c['topic'] == adv['topic'] and c['guid'] == adv['guid']]:
@@ -502,7 +489,7 @@ class DZMQ(object):
         # Are we already connected to this publisher for this topic
         # on this address?
         for c in self.sub_connections:
-            if c['topic'] == adv['topic'] and c['address'] == adv['address']:
+            if c['topic'] == adv['topic'] and c['addr'] == adv['addr']:
                 c['guid'] == adv['guid']
                 return
 
@@ -510,17 +497,17 @@ class DZMQ(object):
         conn = {}
         conn['socket'] = self.sub_socket
         conn['topic'] = adv['topic']
-        conn['address'] = adv['address']
+        conn['addr'] = adv['addr']
         conn['guid'] = adv['guid']
         conn['socket'].setsockopt(zmq.SUBSCRIBE, adv['topic'].encode('utf-8'))
 
-        if not any([s['address'] == adv['address']
+        if not any([s['addr'] == adv['addr']
                     for s in self.sub_connections]):
-            conn['socket'].connect(adv['address'])
+            conn['socket'].connect(adv['addr'])
 
         self.sub_connections.append(conn)
-        self.log.info('Connected to %s for %s (%s != %s)' %
-                      (adv['address'], adv['topic'], adv['guid'], self.guid))
+        self.log.info('Connected to %s for %s (%s)' %
+                      (adv['addr'], adv['topic'], adv['guid']))
 
     def get_listeners(self, topic):
         """
@@ -554,6 +541,32 @@ class DZMQ(object):
         self.poller.register(obj, zmq.POLLIN)
         self.poll_cbs[obj] = cb
 
+    def _handle_bcast_recv(self):
+
+        data = self._broadcast.handle_recv()
+        if not data:
+            return
+
+        topic = data['topic']
+        addr = data['addr']
+
+        if data['type'] == 'sub':
+            # check for a new listener
+            listeners = self._listeners
+            if topic in listeners and addr not in listeners[topic]:
+                [self._advertise(p) for p in self.publishers
+                 if p['topic'] == topic]
+
+            # update our listeners
+            if topic in listeners:
+                listeners[topic][addr] = time.time()
+
+        elif data['type'] == 'adv':
+            # Are we interested in this topic?
+            if [s for s in self.subscribers if s['topic'] == data['topic']]:
+                # Yes, we're interested; make a connection
+                self._connect_subscriber(data)
+
     def spinOnce(self, timeout=0.01):
         """
         Check for incoming messages, invoking callbacks.  If any items
@@ -582,6 +595,7 @@ class DZMQ(object):
 
         if items.get(self._broadcast.sock.fileno(), None) == zmq.POLLIN:
             self._handle_bcast_recv()
+
 
             # these come in bursts, so keep checking for them
             # to avoid a context switch
