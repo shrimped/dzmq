@@ -109,6 +109,73 @@ def pack_msg(obj):
     return json.dumps(obj).encode('utf-8')
 
 
+class Broadcast(object):
+
+    def __init__(self, log):
+        self.log = log
+        # Determine network addresses.  Look at environment variables, and
+        # fall back on defaults.
+
+        # What IP address will we give to others to use when contacting us?
+        addrs = []
+        if DZMQ_IP_KEY in os.environ:
+            addrs = get_local_addresses(addrs=[os.environ[DZMQ_IP_KEY]])
+        elif DZMQ_IFACE_KEY in os.environ:
+            addrs = get_local_addresses(ifaces=[os.environ[DZMQ_IFACE_KEY]])
+        if not addrs:
+            addrs = get_local_addresses()
+        if addrs:
+            self.ipaddr = addrs[0]['addr']
+            self.host = addrs[0]['broadcast']
+        else:
+            if sys.platform == 'win32':
+                self.ipaddr = '127.0.0.1'
+                self.host = '255.255.255.255'
+            elif 'linux' in sys.platform:
+                self.ipaddr = '127.0.0.255'
+                self.host = '127.255.255.255'
+            else:
+                self.ipaddr = '127.0.0.1'
+                self.host = MULTICAST_GRP
+
+        # What's our broadcast port?
+        if DZMQ_PORT_KEY in os.environ:
+            self.port = int(os.environ[DZMQ_PORT_KEY])
+        else:
+            # Take the default
+            self.port = BCAST_PORT
+        # What's our broadcast host?
+        if DZMQ_HOST_KEY in os.environ:
+            self.host = os.environ[DZMQ_HOST_KEY]
+        else:
+            pass
+
+        # Set up to send broadcasts
+        self.sock = socket.socket(socket.AF_INET,  # Internet
+                                        socket.SOCK_DGRAM,  # UDP
+                                        socket.IPPROTO_UDP)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if platform.system() in ['Darwin']:
+            self.sock.setsockopt(socket.SOL_SOCKET,
+                                       socket.SO_REUSEPORT, 1)
+        self.sock.bind(('', self.port))
+
+        if self.host == MULTICAST_GRP:
+            self.sock.setsockopt(socket.IPPROTO_IP,
+                                       socket.IP_MULTICAST_TTL, 2)
+            mreq = struct.pack("4sl", socket.inet_aton(MULTICAST_GRP),
+                               socket.INADDR_ANY)
+            self.sock.setsockopt(socket.IPPROTO_IP,
+                                       socket.IP_ADD_MEMBERSHIP,
+                                       mreq)
+        self.log.info("Opened (%s, %s)" %
+                      (self.host, self.port))
+
+    def send(self, msg):
+        self.sock.sendto(msg, (self.host, self.port))
+
+
 class DZMQ(object):
 
     """
@@ -155,7 +222,8 @@ class DZMQ(object):
             self.log.setLevel(logging.DEBUG)
 
         self.address = address
-        self._setup_broadcast()
+        self._broadcast = Broadcast(self.log)
+        self.ipaddr = self._broadcast.ipaddr
 
         # Bookkeeping (which should be cleaned up)
         self.publishers = []
@@ -186,7 +254,7 @@ class DZMQ(object):
         self.sub_socket.setsockopt(zmq.LINGER, 0)
         self.sub_socket_addrs = []
 
-        self.poller.register(self.bcast_sock, zmq.POLLIN)
+        self.poller.register(self._broadcast.sock, zmq.POLLIN)
         self.poller.register(self.sub_socket, zmq.POLLIN)
 
         self.poll_cbs = dict()
@@ -198,66 +266,6 @@ class DZMQ(object):
         poller.poll()
 
         self._last_hb = 0
-
-    def _setup_broadcast(self):
-        # Determine network addresses.  Look at environment variables, and
-        # fall back on defaults.
-
-        # What IP address will we give to others to use when contacting us?
-        addrs = []
-        if DZMQ_IP_KEY in os.environ:
-            addrs = get_local_addresses(addrs=[os.environ[DZMQ_IP_KEY]])
-        elif DZMQ_IFACE_KEY in os.environ:
-            addrs = get_local_addresses(ifaces=[os.environ[DZMQ_IFACE_KEY]])
-        if not addrs:
-            addrs = get_local_addresses()
-        if addrs:
-            self.ipaddr = addrs[0]['addr']
-            self.bcast_host = addrs[0]['broadcast']
-        else:
-            if sys.platform == 'win32':
-                self.ipaddr = '127.0.0.1'
-                self.bcast_host = '255.255.255.255'
-            elif 'linux' in sys.platform:
-                self.ipaddr = '127.0.0.255'
-                self.bcast_host = '127.255.255.255'
-            else:
-                self.ipaddr = '127.0.0.1'
-                self.bcast_host = MULTICAST_GRP
-
-        # What's our broadcast port?
-        if DZMQ_PORT_KEY in os.environ:
-            self.bcast_port = int(os.environ[DZMQ_PORT_KEY])
-        else:
-            # Take the default
-            self.bcast_port = BCAST_PORT
-        # What's our broadcast host?
-        if DZMQ_HOST_KEY in os.environ:
-            self.bcast_host = os.environ[DZMQ_HOST_KEY]
-        else:
-            pass
-
-        # Set up to send broadcasts
-        self.bcast_sock = socket.socket(socket.AF_INET,  # Internet
-                                        socket.SOCK_DGRAM,  # UDP
-                                        socket.IPPROTO_UDP)
-        self.bcast_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        self.bcast_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        if platform.system() in ['Darwin']:
-            self.bcast_sock.setsockopt(socket.SOL_SOCKET,
-                                       socket.SO_REUSEPORT, 1)
-        self.bcast_sock.bind(('', self.bcast_port))
-
-        if self.bcast_host == MULTICAST_GRP:
-            self.bcast_sock.setsockopt(socket.IPPROTO_IP,
-                                       socket.IP_MULTICAST_TTL, 2)
-            mreq = struct.pack("4sl", socket.inet_aton(MULTICAST_GRP),
-                               socket.INADDR_ANY)
-            self.bcast_sock.setsockopt(socket.IPPROTO_IP,
-                                       socket.IP_ADD_MEMBERSHIP,
-                                       mreq)
-        self.log.info("Opened (%s, %s)" %
-                      (self.bcast_host, self.bcast_port))
 
     def _sighandler(self, sig, frame):
         self.close()
@@ -284,7 +292,7 @@ class DZMQ(object):
             mymsg = msg
             mymsg += struct.pack('<H', len(addr))
             mymsg += addr.encode('utf-8')
-            self.bcast_sock.sendto(mymsg, (self.bcast_host, self.bcast_port))
+            self._broadcast.send(mymsg)
 
     def advertise(self, topic):
         """
@@ -351,7 +359,7 @@ class DZMQ(object):
         msg += struct.pack('<%dB' % FLAGS_LENGTH, *flags)
         msg += struct.pack('<H', len(self.address))
         msg += self.address.encode('utf-8')
-        self.bcast_sock.sendto(msg, (self.bcast_host, self.bcast_port))
+        self._broadcast.send(msg)
 
     def subscribe(self, topic, cb):
         """
@@ -363,6 +371,7 @@ class DZMQ(object):
         cb : callable
             Callable that accepts one argument (msg).
         """
+        # TODO: reinstate the raw subscriber
         # Record what we're doing
         subscriber = {}
         subscriber['topic'] = topic
@@ -403,6 +412,7 @@ class DZMQ(object):
             Mesage to send.
         """
         if [p for p in self.publishers if p['topic'] == topic]:
+            # TODO: if the message is raw bytes, leave it be
             msg = pack_msg(msg)
             self.pub_socket.send_multipart((topic.encode('utf-8'), msg))
 
@@ -410,7 +420,7 @@ class DZMQ(object):
         """
         Internal method to handle receipt of broadcast messages.
         """
-        msg = self.bcast_sock.recvfrom(UDP_MAX_SIZE)
+        msg = self._broadcast.sock.recvfrom(UDP_MAX_SIZE)
         try:
             data, addr = msg
             # Unpack the header
@@ -588,13 +598,13 @@ class DZMQ(object):
             if obj in items or obj.fileno() in items:
                 poll_cb()
 
-        if items.get(self.bcast_sock.fileno(), None) == zmq.POLLIN:
+        if items.get(self._broadcast.sock.fileno(), None) == zmq.POLLIN:
             self._handle_bcast_recv()
 
             # these come in bursts, so keep checking for them
             # to avoid a context switch
             while 1:
-                r, w, e = select.select([self.bcast_sock], [], [], 0)
+                r, w, e = select.select([self._broadcast.sock], [], [], 0)
                 if r:
                     self._handle_bcast_recv()
                 else:
@@ -636,7 +646,7 @@ class DZMQ(object):
         """
         Close the DZMQ Interface and all of its ports.
         """
-        self.bcast_sock.close()
+        self._broadcast.sock.close()
         self.pub_socket.close()
         self.sub_socket.close()
 
