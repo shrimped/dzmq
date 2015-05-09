@@ -176,35 +176,43 @@ class Broadcast(object):
             self.sock.setsockopt(socket.IPPROTO_IP,
                                        socket.IP_ADD_MEMBERSHIP,
                                        mreq)
+        self.advert_cache = dict()
+        self.sub_cache = dict()
         self.log.info("Opened (%s, %s)" %
                       (self.host, self.port))
 
     def advertise(self, topic, address):
-        msg = b''
-        msg += struct.pack('<H', VERSION)
-        msg += self.guid.bytes
-        msg += struct.pack('<B', len(topic))
-        msg += topic.encode('utf-8')
-        msg += struct.pack('<B', OP_ADV)
-        # Flags unused for now
-        flags = [0x00] * FLAGS_LENGTH
-        msg += struct.pack('<%dB' % (FLAGS_LENGTH), *flags)
-        msg += struct.pack('<H', len(address))
-        msg += address.encode('utf-8')
+        msg = self.advert_cache.get((topic, address), None)
+        if not msg:
+            msg = b''
+            msg += struct.pack('<H', VERSION)
+            msg += self.guid.bytes
+            msg += struct.pack('<B', len(topic))
+            msg += topic.encode('utf-8')
+            msg += struct.pack('<B', OP_ADV)
+            # Flags unused for now
+            flags = [0x00] * FLAGS_LENGTH
+            msg += struct.pack('<%dB' % (FLAGS_LENGTH), *flags)
+            msg += struct.pack('<H', len(address))
+            msg += address.encode('utf-8')
+            self.advert_cache[(topic, address)] = msg
         self.sock.sendto(msg, (self.host, self.port))
 
     def subscribe(self, topic, address):
-        msg = b''
-        msg += struct.pack('<H', VERSION)
-        msg += self.guid.bytes
-        msg += struct.pack('<B', len(topic))
-        msg += topic.encode('utf-8')
-        msg += struct.pack('<B', OP_SUB)
-        # Flags unused for now
-        flags = [0x00] * FLAGS_LENGTH
-        msg += struct.pack('<%dB' % FLAGS_LENGTH, *flags)
-        msg += struct.pack('<H', len(address))
-        msg += address.encode('utf-8')
+        msg = self.sub_cache.get((topic, address), None)
+        if not msg:
+            msg = b''
+            msg += struct.pack('<H', VERSION)
+            msg += self.guid.bytes
+            msg += struct.pack('<B', len(topic))
+            msg += topic.encode('utf-8')
+            msg += struct.pack('<B', OP_SUB)
+            # Flags unused for now
+            flags = [0x00] * FLAGS_LENGTH
+            msg += struct.pack('<%dB' % FLAGS_LENGTH, *flags)
+            msg += struct.pack('<H', len(address))
+            msg += address.encode('utf-8')
+            self.sub_cache[(topic, address)] = msg
         self.sock.sendto(msg, (self.host, self.port))
 
     def handle_recv(self):
