@@ -10,19 +10,8 @@ from collections import defaultdict
 import sys
 import time
 import netifaces
-import base64
 import signal
-import select
-
-try:
-    import ujson as json
-except ImportError:
-    import json
-
-try:
-    import numpy as np
-except ImportError:
-    np = None
+import pickle
 
 from .utils import get_log
 
@@ -48,65 +37,6 @@ FLAGS_LENGTH = 16
 ADDRESS_MAXLENGTH = 267
 DEBUG = False
 
-
-def unpack_msg(data):
-    """
-    Unpack a binary data message into a dictionary.
-
-    Parameters
-    ----------
-    data : bytes
-        Binary data message.
-
-    Returns
-    -------
-    out : dict
-        Unpacked message.
-    """
-    def unpack(obj):
-        obj = json.loads(obj.decode('utf-8'))
-        for (key, value) in obj.items():
-            if isinstance(value, dict):
-                if ('shape' in value and 'dtype' in value and 'data' in value
-                        and np):
-                    value['data'] = base64.b64decode(value['data'])
-                    obj[key] = np.fromstring(value['data'],
-                                             dtype=value['dtype'])
-                    obj[key] = obj[key].reshape(value['shape'])
-                else:
-                    # Make sure to recurse into sub-dicts
-                    obj[key] = unpack(value)
-        return obj
-
-    return unpack(data)
-
-
-def pack_msg(obj):
-    """
-    Pack an object into a binary data message.
-
-    Parameters
-    ----------
-    obj : str or dictionary
-        Object to pack.
-
-    Returns
-    -------
-    out : bytes
-        Binary data message.
-    """
-    if not isinstance(obj, dict):
-        obj = dict(___payload__=obj)
-    for (key, value) in obj.items():
-        if np and isinstance(value, np.ndarray):
-            data = base64.b64encode(value.tobytes()).decode('utf-8')
-            obj[key] = dict(shape=value.shape,
-                            dtype=value.dtype.str,
-                            data=data)
-        elif isinstance(value, dict):  # Make sure we recurse into sub-dicts
-            obj[key] = pack_msg(value)
-
-    return json.dumps(obj).encode('utf-8')
 
 
 # TODO: 
@@ -465,7 +395,7 @@ class DZMQ(object):
             Mesage to send.
         """
         if [p for p in self.publishers if p['topic'] == topic]:
-            packed_msg = pack_msg(msg)
+            packed_msg = pickle.dumps(msg, protocol=-1)
             self.pub_socket.send_multipart((topic.encode('utf-8'), packed_msg))
         for sub in self._local_subs[topic]:
             sub['cb'](msg)
@@ -589,21 +519,12 @@ class DZMQ(object):
         if items.get(self._broadcast.sock.fileno(), None) == zmq.POLLIN:
             self._handle_bcast_recv()
 
-            # these come in bursts, so keep checking for them
-            # to avoid a context switch
-            while 1:
-                r, w, e = select.select([self._broadcast.sock], [], [], 0)
-                if r:
-                    self._handle_bcast_recv()
-                else:
-                    break
-
         if items.get(self.sub_socket, None) == zmq.POLLIN:
             # Get the message (assuming that we get it all in one read)
             topic, msg = self.sub_socket.recv_multipart()
             topic = topic.decode('utf-8')
 
-            msg = unpack_msg(msg)
+            msg = pickle.loads(msg)
 
             subs = [s for s in self.subscribers if s['topic'] == topic]
             if subs:
