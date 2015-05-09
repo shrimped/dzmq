@@ -1,39 +1,29 @@
 #!/usr/bin/env python
-from __future__ import print_function
+
 import dzmq
-import time
 import sys
-
-if 'linux' in sys.platform:
-    d = dzmq.DZMQ(address='ipc:///tmp/writer')
-else:
-    d = dzmq.DZMQ()
-
-d.advertise('status')
+import time
 
 
-SENSOR_MSGS = 0
-LOG_MSGS = 0
+if __name__ == '__main__':
 
+    if 'linux' in sys.platform:
+        d = dzmq.DZMQ(address='ipc:///tmp/source')
+    else:
+        d = dzmq.DZMQ()
 
-def write_sensor_data(msg):
-    global SENSOR_MSGS
-    SENSOR_MSGS += 1
+    d.advertise('sensor_data')
 
+    while not d.get_listeners('sensor_data'):
+        d.spinOnce()
+    time.sleep(0.001)  # wait for sink to get our advertisement back
 
-def write_log_data(msg):
-    global LOG_MSGS
-    LOG_MSGS += 1
+    i = 0
+    while i < 1000:
+        d.publish('sensor_data', 'other data' * 100)
+        d.spinOnce(0.0001)
+        i += 1
+    d.publish('sensor_data', None)
 
-
-d.subscribe('sensor_data', write_sensor_data)
-d.subscribe('log', write_log_data)
-
-tlast = time.time()
-while True:
-    if time.time() - tlast > 1:
-        d.publish('status', 'writer ready')
-        tlast = time.time()
-        print(SENSOR_MSGS, LOG_MSGS)
-    time.sleep(0.001)
-    d.spinOnce(0.001)
+    print(d.get_listeners('sensor_data'))
+    print('done!')

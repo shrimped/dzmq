@@ -1,31 +1,37 @@
 #!/usr/bin/env python
-
+from __future__ import print_function
 import dzmq
 import time
 import sys
 
-if 'linux' in sys.platform:
-    d = dzmq.DZMQ(address='ipc:///tmp/other')
-else:
-    d = dzmq.DZMQ()
 
-d.advertise('status')
-d.advertise('log')
-d.advertise('sensor_data')
+class Sink(object):
+
+    def __init__(self):
+
+        if 'linux' in sys.platform:
+            self.sock = dzmq.DZMQ(address='ipc:///tmp/sink')
+        else:
+            self.sock = dzmq.DZMQ()
+
+        self.count = 0
+        self.ncounts = 1e6
+        self.t0 = 0
+
+        self.sock.subscribe('sensor_data', self.handle_data)
+
+    def handle_data(self, msg):
+        if not self.count:
+            self.t0 = time.time()
+        self.count += 1
+        if msg is None:
+            elapsed = time.time() - self.t0
+            print('%s msg, %.3f sec, %.3f msg/sec' % (self.count, elapsed,
+                                                      self.count / elapsed))
+            self.sock.close()
+            sys.exit(0)
 
 
-while not d.get_listeners('log'):
-    d.spinOnce(0.001)
-print('synched')
-
-i = 0
-while i < 10000:
-    d.spinOnce(0.0)
-    d.publish('sensor_data', 'other data' * 1000)
-    time.sleep(0.0005)
-    i += 1
-    if (i % 10) == 0:
-        d.publish('log', 'other says hello')
-
-print(d.get_listeners('log'))
-print('done!')
+if __name__ == '__main__':
+    s = Sink()
+    s.sock.spin()
