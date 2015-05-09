@@ -9,11 +9,10 @@ import atexit
 from collections import defaultdict
 import sys
 import time
-import netifaces
 import signal
 import pickle
 
-from .utils import get_log
+from .utils import get_log, get_local_addresses
 
 
 # Defaults and overrides
@@ -339,23 +338,22 @@ class DZMQ(object):
         address : str
             Valid ZMQ address: tcp:// or ipc://.
         """
-        self.context = context or zmq.Context.instance()
+        self._context = context or zmq.Context.instance()
         self.log = log or get_log()
+        self.address = address
 
         atexit.register(self.close)
 
         if DEBUG:
             self.log.setLevel(logging.DEBUG)
 
-        self.address = address
         self._broadcast = Broadcaster(self.log)
-
-        self.poller = zmq.Poller()
+        self._poller = zmq.Poller()
 
         signal.signal(signal.SIGINT, self._sighandler)
 
         # Set up the one pub and one sub socket that we'll use
-        pub_socket = self.context.socket(zmq.PUB)
+        pub_socket = self._context.socket(zmq.PUB)
         if not self.address:
             tcp_addr = 'tcp://%s' % (self._broadcast.ipaddr)
             tcp_port = pub_socket.bind_to_random_port(tcp_addr)
@@ -370,14 +368,14 @@ class DZMQ(object):
 
         self._publisher = Publisher(pub_socket, self.log)
 
-        sub_socket = self.context.socket(zmq.SUB)
+        sub_socket = self._context.socket(zmq.SUB)
         self._subscriber = Subscriber(sub_socket, self.log)
 
-        self.poller.register(self._broadcast.sock, zmq.POLLIN)
-        self.poller.register(sub_socket, zmq.POLLIN)
+        self._poller.register(self._broadcast.sock, zmq.POLLIN)
+        self._poller.register(sub_socket, zmq.POLLIN)
 
-        self.poll_cbs = dict()
-        self.idle_cbs = []
+        self._poll_cbs = dict()
+        self._idle_cbs = []
 
         # wait for the pub socket to start up
         poller = zmq.Poller()
@@ -492,11 +490,11 @@ class DZMQ(object):
             call when idle.
         """
         if not obj:
-            self.idle_cbs.append(cb)
+            self._idle_cbs.append(cb)
             return
 
-        self.poller.register(obj, zmq.POLLIN)
-        self.poll_cbs[obj] = cb
+        self._poller.register(obj, zmq.POLLIN)
+        self._poll_cbs[obj] = cb
 
     def _handle_bcast_recv(self):
 
@@ -537,9 +535,9 @@ class DZMQ(object):
             timeout = int(timeout * 1e3)
 
         # Look for sockets that are ready to read
-        items = dict(self.poller.poll(timeout))
+        items = dict(self._poller.poll(timeout))
 
-        for (obj, poll_cb) in self.poll_cbs.items():
+        for (obj, poll_cb) in self._poll_cbs.items():
             if obj in items or obj.fileno() in items:
                 poll_cb()
 
@@ -557,7 +555,7 @@ class DZMQ(object):
             self.spinOnce(timeout=0)  # avoid a context switch
 
         if not items or timeout:
-            [cb() for cb in self.idle_cbs]
+            [cb() for cb in self._idle_cbs]
 
     def spin(self):
         """
@@ -573,61 +571,3 @@ class DZMQ(object):
         self._broadcast.sock.close()
         self._publisher.sock.close()
         self._subscriber.sock.close()
-
-# Stolen from rosgraph
-# https://github.com/ros/ros_comm/blob/hydro-devel/tools/rosgraph/src/rosgraph/network.py
-# cache for performance reasons
-_local_addrs = None
-
-
-def get_local_addresses(use_ipv6=False, addrs=None, ifaces=None):
-    """
-    Get a list of local ip addresses that meet a given criteria.
-
-    Parameters
-    ----------
-    use_ipv6 : bool, optional
-        Whether to allow ipv6 addresses.
-    addrs : list of strings, optional
-        List of addresses to look for.
-    ifaces : list strings, optional
-        List of ethernet interfaces.
-
-    Returns
-    -------
-    address : list of strings
-        List of available local ip addresses that meet a given criteria.
-    """
-    # cache address data as it can be slow to calculate
-    global _local_addrs
-    if _local_addrs is not None:
-        return _local_addrs
-
-    ifaces = ifaces or netifaces.interfaces()
-
-    v4addrs = []
-    v6addrs = []
-    for iface in ifaces:
-        try:
-            ifaddrs = netifaces.ifaddresses(iface)
-        except ValueError:
-            # even if interfaces() returns an interface name
-            # ifaddresses() might raise a ValueError
-            # https://bugs.launchpad.net/ubuntu/+source/netifaces/+bug/753009
-            continue
-        if socket.AF_INET in ifaddrs:
-            v4addrs.extend([addr
-                            for addr in ifaddrs[socket.AF_INET]
-                            if 'broadcast' in addr])
-        if socket.AF_INET6 in ifaddrs:
-            v6addrs.extend([addr
-                            for addr in ifaddrs[socket.AF_INET6]
-                            if 'broadcast' in addr])
-    if use_ipv6:
-        local_addrs = v6addrs + v4addrs
-    else:
-        local_addrs = v4addrs
-    if addrs:
-        local_addrs = [a for a in local_addrs if not a['addr'] in addrs]
-    _local_addrs = local_addrs
-    return local_addrs
