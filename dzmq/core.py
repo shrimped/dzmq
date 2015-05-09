@@ -236,6 +236,12 @@ class Publisher(object):
         packed_msg = pickle.dumps(msg, protocol=-1)
         self.sock.send_multipart((topic.encode('utf-8'), packed_msg))
 
+    def get_listeners(self, topic):
+        if topic not in self.listeners:
+            return []
+        return [addr for (addr, tstamp) in self.listeners[topic].items()
+                if (time.time() - tstamp) < 2 * HB_REPEAT_PERIOD]
+
 
 class Subscriber(object):
 
@@ -472,11 +478,7 @@ class DZMQ(object):
         topic : str
             Name of topic.
         """
-        listeners = self._publisher.listeners
-        if topic not in listeners:
-            return []
-        return [addr for (addr, tstamp) in listeners[topic].items()
-                if (time.time() - tstamp) < 2 * HB_REPEAT_PERIOD]
+        return self._publisher.get_listeners()
 
     def register_cb(self, cb, obj=None):
         """Register a callback to the spinOnce loop.
