@@ -109,6 +109,12 @@ def pack_msg(obj):
     return json.dumps(obj).encode('utf-8')
 
 
+# TODO: 
+# broadcast has a list of brodcast messages, instead of composing them 
+# x- remove inproc in favor of local callbacks 
+# bring back the raw message send/recv
+
+
 class Broadcast(object):
 
     def __init__(self, log):
@@ -223,7 +229,6 @@ class DZMQ(object):
 
         self.address = address
         self._broadcast = Broadcast(self.log)
-        self.ipaddr = self._broadcast.ipaddr
 
         # Bookkeeping (which should be cleaned up)
         self.publishers = []
@@ -238,7 +243,7 @@ class DZMQ(object):
         self.pub_socket = self.context.socket(zmq.PUB)
         self.pub_socket_addrs = []
         if not self.address:
-            tcp_addr = 'tcp://%s' % (self.ipaddr)
+            tcp_addr = 'tcp://%s' % (self._broadcast.ipaddr)
             tcp_port = self.pub_socket.bind_to_random_port(tcp_addr)
             tcp_addr += ':%d' % (tcp_port)
             self.address = tcp_addr
@@ -266,6 +271,7 @@ class DZMQ(object):
         poller.poll()
 
         self._last_hb = 0
+        self._local_subs = dict()
 
     def _sighandler(self, sig, frame):
         self.close()
@@ -283,16 +289,9 @@ class DZMQ(object):
         # Flags unused for now
         flags = [0x00] * FLAGS_LENGTH
         msg += struct.pack('<%dB' % (FLAGS_LENGTH), *flags)
-        # We'll announce once for each address
-        for addr in publisher['addresses']:
-            if addr.startswith('inproc'):
-                # Don't broadcast inproc addresses
-                continue
-            # Struct objects copy by value
-            mymsg = msg
-            mymsg += struct.pack('<H', len(addr))
-            mymsg += addr.encode('utf-8')
-            self._broadcast.send(mymsg)
+        msg += struct.pack('<H', len(publisher['address']))
+        msg += publisher['address'].encode('utf-8')
+        self._broadcast.send(msg)
 
     def advertise(self, topic):
         """
@@ -308,26 +307,21 @@ class DZMQ(object):
                             % (len(topic), TOPIC_MAXLENGTH))
         publisher = {}
         publisher['socket'] = self.pub_socket
-        inproc_addr = 'inproc://%s' % topic
 
-        if inproc_addr not in self.pub_socket_addrs:
-            publisher['socket'].bind(inproc_addr)
-            self.pub_socket_addrs.append(inproc_addr)
         address = [a for a in self.pub_socket_addrs
                    if a.startswith(('tcp', 'ipc'))][0]
-        publisher['addresses'] = [inproc_addr, address]
+        publisher['address'] = address
         publisher['topic'] = topic
         self.publishers.append(publisher)
         self._advertise(publisher)
 
+        if topic not in self._local_subs:
+            self._local_subs[topic] = []
+
         # Also connect to internal subscribers, if there are any
-        adv = {}
-        adv['topic'] = topic
-        adv['address'] = inproc_addr
-        adv['guid'] = self.guid
         for sub in self.subscribers:
             if sub['topic'] == topic:
-                self._connect_subscriber(adv)
+                self._local_subs[topic].append(sub)
 
         if topic not in self._listeners:
             self._listeners[topic] = dict()
@@ -371,7 +365,6 @@ class DZMQ(object):
         cb : callable
             Callable that accepts one argument (msg).
         """
-        # TODO: reinstate the raw subscriber
         # Record what we're doing
         subscriber = {}
         subscriber['topic'] = topic
@@ -380,13 +373,8 @@ class DZMQ(object):
         self._subscribe(subscriber)
 
         # Also connect to internal publishers, if there are any
-        adv = {}
-        adv['topic'] = subscriber['topic']
-        adv['address'] = 'inproc://%s' % subscriber['topic']
-        adv['guid'] = self.guid
-        for pub in self.publishers:
-            if pub['topic'] == subscriber['topic']:
-                self._connect_subscriber(adv)
+        if topic in self._local_subs:
+            self._local_subs[topic].append(subscriber)
 
     def unsubscribe(self, topic):
         """
@@ -412,9 +400,10 @@ class DZMQ(object):
             Mesage to send.
         """
         if [p for p in self.publishers if p['topic'] == topic]:
-            # TODO: if the message is raw bytes, leave it be
-            msg = pack_msg(msg)
-            self.pub_socket.send_multipart((topic.encode('utf-8'), msg))
+            packed_msg = pack_msg(msg)
+            self.pub_socket.send_multipart((topic.encode('utf-8'), packed_msg))
+        for sub in self._local_subs[topic]:
+            sub['cb'](msg)
 
     def _handle_bcast_recv(self):
         """
@@ -495,17 +484,10 @@ class DZMQ(object):
         """
         Internal method to connect to a publisher.
         """
-        # Choose the best address to use.  If the publisher's GUID is the same
-        # as our GUID, then we must both be in the same process, in which case
-        # we'd like to use an 'inproc://' address.  Otherwise, fall back on
-        # 'tcp://'.
+        # Choose the best address to use. 
         if adv['address'].startswith(('tcp', 'ipc')):
             if adv['guid'] == self.guid:
                 # Us; skip it
-                return
-        elif adv['address'].startswith('inproc'):
-            if adv['guid'] != self.guid:
-                # Not us; skip it
                 return
         else:
             self.log.warn('Warning: ignoring unknown address type: %s' %
