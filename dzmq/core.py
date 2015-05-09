@@ -9,22 +9,10 @@ import atexit
 from collections import defaultdict
 import sys
 import time
-import netifaces
-import base64
 import signal
-import select
+import pickle
 
-try:
-    import ujson as json
-except ImportError:
-    import json
-
-try:
-    import numpy as np
-except ImportError:
-    np = None
-
-from .utils import get_log
+from .utils import get_log, get_local_addresses
 
 
 # Defaults and overrides
@@ -40,7 +28,7 @@ OP_ADV = 0x01
 OP_SUB = 0x02
 
 UDP_MAX_SIZE = 512
-GUID_LENGTH = 16
+GUID_LENGTH = 8
 HB_REPEAT_PERIOD = 1.0
 VERSION = 0x0001
 TOPIC_MAXLENGTH = 192
@@ -49,64 +37,269 @@ ADDRESS_MAXLENGTH = 267
 DEBUG = False
 
 
-def unpack_msg(data):
-    """
-    Unpack a binary data message into a dictionary.
+class Broadcaster(object):
 
-    Parameters
-    ----------
-    data : bytes
-        Binary data message.
+    def __init__(self, log):
+        self.log = log
+        self.guid = uuid.uuid4()
+        # Determine network addresses.  Look at environment variables, and
+        # fall back on defaults.
 
-    Returns
-    -------
-    out : dict
-        Unpacked message.
-    """
-    def unpack(obj):
-        obj = json.loads(obj.decode('utf-8'))
-        for (key, value) in obj.items():
-            if isinstance(value, dict):
-                if ('shape' in value and 'dtype' in value and 'data' in value
-                        and np):
-                    value['data'] = base64.b64decode(value['data'])
-                    obj[key] = np.fromstring(value['data'],
-                                             dtype=value['dtype'])
-                    obj[key] = obj[key].reshape(value['shape'])
-                else:
-                    # Make sure to recurse into sub-dicts
-                    obj[key] = unpack(value)
-        return obj
+        # What IP address will we give to others to use when contacting us?
+        addrs = []
+        if DZMQ_IP_KEY in os.environ:
+            addrs = get_local_addresses(addrs=[os.environ[DZMQ_IP_KEY]])
+        elif DZMQ_IFACE_KEY in os.environ:
+            addrs = get_local_addresses(ifaces=[os.environ[DZMQ_IFACE_KEY]])
+        if not addrs:
+            addrs = get_local_addresses()
+        if addrs:
+            self.ipaddr = addrs[0]['addr']
+            self.host = addrs[0]['broadcast']
+        else:
+            if sys.platform == 'win32':
+                self.ipaddr = '127.0.0.1'
+                self.host = '255.255.255.255'
+            elif 'linux' in sys.platform:
+                self.ipaddr = '127.0.0.255'
+                self.host = '127.255.255.255'
+            else:
+                self.ipaddr = '127.0.0.1'
+                self.host = MULTICAST_GRP
 
-    return unpack(data)
+        # What's our broadcast port?
+        if DZMQ_PORT_KEY in os.environ:
+            self.port = int(os.environ[DZMQ_PORT_KEY])
+        else:
+            # Take the default
+            self.port = BCAST_PORT
+        # What's our broadcast host?
+        if DZMQ_HOST_KEY in os.environ:
+            self.host = os.environ[DZMQ_HOST_KEY]
+        else:
+            pass
+
+        # Set up to send broadcasts
+        self.sock = socket.socket(socket.AF_INET,  # Internet
+                                        socket.SOCK_DGRAM,  # UDP
+                                        socket.IPPROTO_UDP)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if platform.system() in ['Darwin']:
+            self.sock.setsockopt(socket.SOL_SOCKET,
+                                       socket.SO_REUSEPORT, 1)
+        self.sock.bind(('', self.port))
+
+        if self.host == MULTICAST_GRP:
+            self.sock.setsockopt(socket.IPPROTO_IP,
+                                       socket.IP_MULTICAST_TTL, 2)
+            mreq = struct.pack("4sl", socket.inet_aton(MULTICAST_GRP),
+                               socket.INADDR_ANY)
+            self.sock.setsockopt(socket.IPPROTO_IP,
+                                       socket.IP_ADD_MEMBERSHIP,
+                                       mreq)
+        self.pubs = dict()
+        self.subs = dict()
+        self.log.info("Opened (%s, %s)" %
+                      (self.host, self.port))
+
+    def advertise(self, topic, address):
+        msg = self.pubs.get(topic, None)
+        if not msg:
+            msg = b''
+            msg += struct.pack('<H', VERSION)
+            msg += self.guid.bytes[:GUID_LENGTH]
+            msg += struct.pack('<B', len(topic))
+            msg += topic.encode('utf-8')
+            msg += struct.pack('<B', OP_ADV)
+            # Flags unused for now
+            flags = [0x00] * FLAGS_LENGTH
+            msg += struct.pack('<%dB' % (FLAGS_LENGTH), *flags)
+            msg += struct.pack('<H', len(address))
+            msg += address.encode('utf-8')
+            self.pubs[topic] = msg
+        self.sock.sendto(msg, (self.host, self.port))
+
+    def subscribe(self, topic, address):
+        msg = self.subs.get(topic, None)
+        if not msg:
+            msg = b''
+            msg += struct.pack('<H', VERSION)
+            msg += self.guid.bytes[:GUID_LENGTH]
+            msg += struct.pack('<B', len(topic))
+            msg += topic.encode('utf-8')
+            msg += struct.pack('<B', OP_SUB)
+            # Flags unused for now
+            flags = [0x00] * FLAGS_LENGTH
+            msg += struct.pack('<%dB' % FLAGS_LENGTH, *flags)
+            msg += struct.pack('<H', len(address))
+            msg += address.encode('utf-8')
+            self.subs[topic] = msg
+        self.sock.sendto(msg, (self.host, self.port))
+
+    def handle_recv(self):
+        """
+        Internal method to handle receipt of broadcast messages.
+        """
+        msg = self.sock.recvfrom(UDP_MAX_SIZE)
+        try:
+            data, addr = msg
+            # Unpack the header
+            offset = 0
+            version = struct.unpack_from('<H', data, offset)[0]
+            if version != VERSION:
+                self.log.warn('Warning: mismatched protocol versions: %d != %d'
+                              % (version, VERSION))
+            offset += 2
+            guid = data[offset: offset + GUID_LENGTH]
+            if guid == self.guid.bytes[:GUID_LENGTH]:
+                return
+            offset += GUID_LENGTH
+
+            topiclength = struct.unpack_from('<B', data, offset)[0]
+            offset += 1
+            topic = data[offset:offset + topiclength].decode('utf-8')
+            offset += topiclength
+            op = struct.unpack_from('<B', data, offset)[0]
+            offset += 1
+            flags = struct.unpack_from('<%dB' % FLAGS_LENGTH, data, offset)
+            offset += FLAGS_LENGTH
+
+            if op == OP_ADV:
+                # Unpack the ADV body
+                adv = {}
+                adv['topic'] = topic
+                adv['type'] = 'adv'
+                adv['guid'] = guid
+                adv['flags'] = flags
+                addresslength = struct.unpack_from('<H', data, offset)[0]
+                offset += 2
+                addr = data[offset:offset + addresslength]
+                adv['addr'] = addr.decode('utf-8')
+                offset += addresslength
+
+                return adv
+
+            elif op == OP_SUB:
+                # Unpack the sub body
+                sub = {}
+                sub['type'] = 'sub'
+                sub['topic'] = topic
+                sub['guid'] = guid
+                sub['flags'] = flags
+                addresslength = struct.unpack_from('<H', data, offset)[0]
+                offset += 2
+                addr = data[offset:offset + addresslength]
+                sub['addr'] = addr.decode('utf-8')
+                offset += addresslength
+
+                return sub
+
+            else:
+                self.log.warn('Warning: got unrecognized OP: %d' % op)
+
+        except Exception as e:
+            self.log.exception(e)
+            self.log.warn('Warning: exception while processing SUB or ADV '
+                          'message: %s' % e)
+
+    def unsubscribe(self, topic):
+        self.subs.pop(topic, None)
+
+    def unadvertise(self, topic):
+        self.pubs.pop(topic, None)
+
+    def send_all(self):
+        for msg in self.pubs.values():
+            self.sock.sendto(msg, (self.host, self.port))
+
+        for msg in self.subs.values():
+            self.sock.sendto(msg, (self.host, self.port))
 
 
-def pack_msg(obj):
-    """
-    Pack an object into a binary data message.
+class Publisher(object):
 
-    Parameters
-    ----------
-    obj : str or dictionary
-        Object to pack.
+    def __init__(self, socket, log):
+        self.sock = socket
+        self.log = log
+        self.sock.setsockopt(zmq.LINGER, 0)
+        self.listeners = defaultdict(dict)
 
-    Returns
-    -------
-    out : bytes
-        Binary data message.
-    """
-    if not isinstance(obj, dict):
-        obj = dict(___payload__=obj)
-    for (key, value) in obj.items():
-        if np and isinstance(value, np.ndarray):
-            data = base64.b64encode(value.tobytes()).decode('utf-8')
-            obj[key] = dict(shape=value.shape,
-                            dtype=value.dtype.str,
-                            data=data)
-        elif isinstance(value, dict):  # Make sure we recurse into sub-dicts
-            obj[key] = pack_msg(value)
+    def advertise(self, topic):
+        self.listeners[topic] = dict()
 
-    return json.dumps(obj).encode('utf-8')
+    def unadvertise(self, topic):
+        self.listeners.pop(topic, None)
+
+    def publish(self, topic, msg):
+        packed_msg = pickle.dumps(msg, protocol=-1)
+        self.sock.send_multipart((topic.encode('utf-8'), packed_msg))
+
+    def get_listeners(self, topic):
+        if topic not in self.listeners:
+            return []
+        return [addr for (addr, tstamp) in self.listeners[topic].items()
+                if (time.time() - tstamp) < 2 * HB_REPEAT_PERIOD]
+
+
+class Subscriber(object):
+
+    def __init__(self, socket, log):
+        self.sock = socket
+        self.log = log
+        self.sock.setsockopt(zmq.LINGER, 0)
+        self.subs = dict()
+        self.sub_connections = []
+
+    def subscribe(self, topic, cb):
+        if topic not in self.subs:
+            self.subs[topic] = []
+        self.subs[topic].append(cb)
+
+    def handle_adv(self, adv):
+        """
+        Internal method to connect to a publisher.
+        """
+        if adv['topic'] not in self.subs:
+            return
+
+        # Are we already connected to this publisher for this topic?
+        if [c for c in self.sub_connections
+                if c['topic'] == adv['topic'] and c['guid'] == adv['guid']]:
+            return
+
+        # Are we already connected to this publisher for this topic
+        # on this address?
+        for c in self.sub_connections:
+            if c['topic'] == adv['topic'] and c['addr'] == adv['addr']:
+                c['guid'] == adv['guid']
+                return
+
+        # Connect our subscriber socket
+        conn = {}
+        conn['socket'] = self.sock
+        conn['topic'] = adv['topic']
+        conn['addr'] = adv['addr']
+        conn['guid'] = adv['guid']
+        conn['socket'].setsockopt(zmq.SUBSCRIBE, adv['topic'].encode('utf-8'))
+
+        if not any([s['addr'] == adv['addr']
+                    for s in self.sub_connections]):
+            conn['socket'].connect(adv['addr'])
+
+        self.sub_connections.append(conn)
+        self.log.info('Connected to %s for %s (%s)' %
+                      (adv['addr'], adv['topic'], adv['guid']))
+
+    def handle_recv(self):
+        # Get the message (assuming that we get it all in one read)
+        topic, msg = self.sock.recv_multipart()
+        topic = topic.decode('utf-8')
+        if topic not in self.subs:
+            return
+        msg = pickle.loads(msg)
+        [cb(msg) for cb in self.subs[topic]]
+        self.log.debug('Got message: %s' % topic)
 
 
 class DZMQ(object):
@@ -145,163 +338,55 @@ class DZMQ(object):
         address : str
             Valid ZMQ address: tcp:// or ipc://.
         """
-        self.context = context or zmq.Context.instance()
+        self._context = context or zmq.Context.instance()
         self.log = log or get_log()
-        self.guid = uuid.uuid4()
+        self.address = address
 
         atexit.register(self.close)
 
         if DEBUG:
             self.log.setLevel(logging.DEBUG)
 
-        # Determine network addresses.  Look at environment variables, and
-        # fall back on defaults.
-
-        # What IP address will we give to others to use when contacting us?
-        addrs = []
-        if DZMQ_IP_KEY in os.environ:
-            addrs = get_local_addresses(addrs=[os.environ[DZMQ_IP_KEY]])
-        elif DZMQ_IFACE_KEY in os.environ:
-            addrs = get_local_addresses(ifaces=[os.environ[DZMQ_IFACE_KEY]])
-        if not addrs:
-            addrs = get_local_addresses()
-        if addrs:
-            self.ipaddr = addrs[0]['addr']
-            self.bcast_host = addrs[0]['broadcast']
-        else:
-            if sys.platform == 'win32':
-                self.ipaddr = '127.0.0.1'
-                self.bcast_host = '255.255.255.255'
-            elif 'linux' in sys.platform:
-                self.ipaddr = '127.0.0.255'
-                self.bcast_host = '127.255.255.255'
-            else:
-                self.ipaddr = '127.0.0.1'
-                self.bcast_host = MULTICAST_GRP
-
-        self.address = address
-
-        # What's our broadcast port?
-        if DZMQ_PORT_KEY in os.environ:
-            self.bcast_port = int(os.environ[DZMQ_PORT_KEY])
-        else:
-            # Take the default
-            self.bcast_port = BCAST_PORT
-        # What's our broadcast host?
-        if DZMQ_HOST_KEY in os.environ:
-            self.bcast_host = os.environ[DZMQ_HOST_KEY]
-        else:
-            pass
-
-        # Set up to listen to broadcasts
-        self.bcast_recv = socket.socket(socket.AF_INET,  # Internet
-                                        socket.SOCK_DGRAM,  # UDP
-                                        socket.IPPROTO_UDP)
-        self.bcast_recv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
-        if platform.system() in ['Darwin']:
-            self.bcast_recv.setsockopt(socket.SOL_SOCKET,
-                                       socket.SO_REUSEPORT, 1)
-
-        try:
-            self._start_bcast_recv()
-        except Exception:
-            self.log.error("Could not open (%s, %s)" %
-                           (self.bcast_host, self.bcast_port))
-            raise
-
-        # Set up to send broadcasts
-        self.bcast_send = socket.socket(socket.AF_INET,  # Internet
-                                        socket.SOCK_DGRAM,  # UDP
-                                        socket.IPPROTO_UDP)
-        self.bcast_send.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        if self.bcast_host == MULTICAST_GRP:
-            self.bcast_send.setsockopt(socket.IPPROTO_IP,
-                                       socket.IP_MULTICAST_TTL, 2)
-
-        # Bookkeeping (which should be cleaned up)
-        self.publishers = []
-        self.subscribers = []
-        self.sub_connections = []
-        self.poller = zmq.Poller()
-        self._listeners = defaultdict(dict)
+        self._broadcast = Broadcaster(self.log)
+        self._poller = zmq.Poller()
 
         signal.signal(signal.SIGINT, self._sighandler)
 
         # Set up the one pub and one sub socket that we'll use
-        self.pub_socket = self.context.socket(zmq.PUB)
-        self.pub_socket_addrs = []
+        pub_socket = self._context.socket(zmq.PUB)
         if not self.address:
-            tcp_addr = 'tcp://%s' % (self.ipaddr)
-            tcp_port = self.pub_socket.bind_to_random_port(tcp_addr)
+            tcp_addr = 'tcp://%s' % (self._broadcast.ipaddr)
+            tcp_port = pub_socket.bind_to_random_port(tcp_addr)
             tcp_addr += ':%d' % (tcp_port)
             self.address = tcp_addr
         else:
-            self.pub_socket.bind(self.address)
+            pub_socket.bind(self.address)
 
         if len(self.address) > ADDRESS_MAXLENGTH:
             raise Exception('Address length %d exceeds maximum %d'
                             % (len(self.address), ADDRESS_MAXLENGTH))
-        self.pub_socket_addrs.append(self.address)
-        self.pub_socket.setsockopt(zmq.LINGER, 0)
-        self.sub_socket = self.context.socket(zmq.SUB)
-        self.sub_socket.setsockopt(zmq.LINGER, 0)
-        self.sub_socket_addrs = []
 
-        self.poller.register(self.bcast_recv, zmq.POLLIN)
-        self.poller.register(self.sub_socket, zmq.POLLIN)
+        self._publisher = Publisher(pub_socket, self.log)
 
-        self.poll_cbs = dict()
-        self.idle_cbs = []
+        sub_socket = self._context.socket(zmq.SUB)
+        self._subscriber = Subscriber(sub_socket, self.log)
+
+        self._poller.register(self._broadcast.sock, zmq.POLLIN)
+        self._poller.register(sub_socket, zmq.POLLIN)
+
+        self._poll_cbs = dict()
+        self._idle_cbs = []
 
         # wait for the pub socket to start up
         poller = zmq.Poller()
-        poller.register(self.pub_socket, zmq.POLLOUT)
+        poller.register(pub_socket, zmq.POLLOUT)
         poller.poll()
 
         self._last_hb = 0
-
-    def _start_bcast_recv(self):
-        if self.bcast_host == MULTICAST_GRP:
-            self.bcast_recv.bind(('', self.bcast_port))
-            mreq = struct.pack("4sl", socket.inet_aton(MULTICAST_GRP),
-                               socket.INADDR_ANY)
-            self.log.debug(self.bcast_port)
-            self.log.debug(mreq)
-            self.bcast_recv.setsockopt(socket.IPPROTO_IP,
-                                       socket.IP_ADD_MEMBERSHIP,
-                                       mreq)
-        else:
-            self.bcast_recv.bind((self.bcast_host, self.bcast_port))
-            self.log.info("Opened (%s, %s)" %
-                          (self.bcast_host, self.bcast_port))
+        self._local_subs = dict()
 
     def _sighandler(self, sig, frame):
         self.close()
-
-    def _advertise(self, publisher):
-        """
-        Internal method to pack and broadcast ADV message.
-        """
-        msg = b''
-        msg += struct.pack('<H', VERSION)
-        msg += self.guid.bytes
-        msg += struct.pack('<B', len(publisher['topic']))
-        msg += publisher['topic'].encode('utf-8')
-        msg += struct.pack('<B', OP_ADV)
-        # Flags unused for now
-        flags = [0x00] * FLAGS_LENGTH
-        msg += struct.pack('<%dB' % (FLAGS_LENGTH), *flags)
-        # We'll announce once for each address
-        for addr in publisher['addresses']:
-            if addr.startswith('inproc'):
-                # Don't broadcast inproc addresses
-                continue
-            # Struct objects copy by value
-            mymsg = msg
-            mymsg += struct.pack('<H', len(addr))
-            mymsg += addr.encode('utf-8')
-            self.bcast_send.sendto(mymsg, (self.bcast_host, self.bcast_port))
 
     def advertise(self, topic):
         """
@@ -315,31 +400,12 @@ class DZMQ(object):
         if len(topic) > TOPIC_MAXLENGTH:
             raise Exception('Topic length %d exceeds maximum %d'
                             % (len(topic), TOPIC_MAXLENGTH))
-        publisher = {}
-        publisher['socket'] = self.pub_socket
-        inproc_addr = 'inproc://%s' % topic
 
-        if inproc_addr not in self.pub_socket_addrs:
-            publisher['socket'].bind(inproc_addr)
-            self.pub_socket_addrs.append(inproc_addr)
-        address = [a for a in self.pub_socket_addrs
-                   if a.startswith(('tcp', 'ipc'))][0]
-        publisher['addresses'] = [inproc_addr, address]
-        publisher['topic'] = topic
-        self.publishers.append(publisher)
-        self._advertise(publisher)
+        self._broadcast.advertise(topic, self.address)
+        self._publisher.advertise(topic)
 
-        # Also connect to internal subscribers, if there are any
-        adv = {}
-        adv['topic'] = topic
-        adv['address'] = inproc_addr
-        adv['guid'] = self.guid
-        for sub in self.subscribers:
-            if sub['topic'] == topic:
-                self._connect_subscriber(adv)
-
-        if topic not in self._listeners:
-            self._listeners[topic] = dict()
+        if topic not in self._local_subs:
+            self._local_subs[topic] = []
 
     def unadvertise(self, topic):
         """
@@ -350,25 +416,8 @@ class DZMQ(object):
         topic : str
             Topic name.
         """
-        self.publishers = [p for p in self.publishers if p['topic'] != topic]
-        del self._listeners[topic]
-
-    def _subscribe(self, subscriber):
-        """
-        Internal method to pack and broadcast SUB message.
-        """
-        msg = b''
-        msg += struct.pack('<H', VERSION)
-        msg += self.guid.bytes
-        msg += struct.pack('<B', len(subscriber['topic']))
-        msg += subscriber['topic'].encode('utf-8')
-        msg += struct.pack('<B', OP_SUB)
-        # Flags unused for now
-        flags = [0x00] * FLAGS_LENGTH
-        msg += struct.pack('<%dB' % FLAGS_LENGTH, *flags)
-        msg += struct.pack('<H', len(self.address))
-        msg += self.address.encode('utf-8')
-        self.bcast_send.sendto(msg, (self.bcast_host, self.bcast_port))
+        self._publisher.unadvertise(topic)
+        self._broadcast.unadvertise(topic)
 
     def subscribe(self, topic, cb):
         """
@@ -380,21 +429,13 @@ class DZMQ(object):
         cb : callable
             Callable that accepts one argument (msg).
         """
-        # Record what we're doing
-        subscriber = {}
-        subscriber['topic'] = topic
-        subscriber['cb'] = cb
-        self.subscribers.append(subscriber)
-        self._subscribe(subscriber)
+        self._subscriber.subscribe(topic, cb)
+        self._broadcast.subscribe(topic, self.address)
 
-        # Also connect to internal publishers, if there are any
-        adv = {}
-        adv['topic'] = subscriber['topic']
-        adv['address'] = 'inproc://%s' % subscriber['topic']
-        adv['guid'] = self.guid
-        for pub in self.publishers:
-            if pub['topic'] == subscriber['topic']:
-                self._connect_subscriber(adv)
+        if topic not in self._local_subs:
+            self._local_subs[topic] = []
+
+        self._local_subs[topic].append(cb)
 
     def unsubscribe(self, topic):
         """
@@ -405,7 +446,8 @@ class DZMQ(object):
         topic : str
             Name of topic.
         """
-        self.subscribers = [s for s in self.subscribers if s['topic'] != topic]
+        self._subscriber.subs.pop(topic, None)
+        self._local_subs.pop(topic, None)
 
     def publish(self, topic, msg):
         """
@@ -419,133 +461,11 @@ class DZMQ(object):
         msg : str or dict
             Mesage to send.
         """
-        if [p for p in self.publishers if p['topic'] == topic]:
-            msg = pack_msg(msg)
-            self.pub_socket.send_multipart((topic.encode('utf-8'), msg))
-
-    def _handle_bcast_recv(self):
-        """
-        Internal method to handle receipt of broadcast messages.
-        """
-        msg = self.bcast_recv.recvfrom(UDP_MAX_SIZE)
-        try:
-            data, addr = msg
-            # Unpack the header
-            offset = 0
-            version = struct.unpack_from('<H', data, offset)[0]
-            if version != VERSION:
-                self.log.warn('Warning: mismatched protocol versions: %d != %d'
-                              % (version, VERSION))
-            offset += 2
-            guid_int = 0
-            for i in range(0, GUID_LENGTH):
-                guid_int += struct.unpack_from('<B', data, offset)[0] << 8 * i
-                offset += 1
-            guid = uuid.UUID(int=guid_int)
-            topiclength = struct.unpack_from('<B', data, offset)[0]
-            offset += 1
-            topic = data[offset:offset + topiclength].decode('utf-8')
-            offset += topiclength
-            op = struct.unpack_from('<B', data, offset)[0]
-            offset += 1
-            flags = struct.unpack_from('<%dB' % FLAGS_LENGTH, data, offset)
-            offset += FLAGS_LENGTH
-
-            if op == OP_ADV:
-                # Unpack the ADV body
-                adv = {}
-                adv['topic'] = topic
-                adv['guid'] = guid
-                adv['flags'] = flags
-                addresslength = struct.unpack_from('<H', data, offset)[0]
-                offset += 2
-                addr = data[offset:offset + addresslength]
-                adv['address'] = addr.decode('utf-8')
-                offset += addresslength
-
-                # Are we interested in this topic?
-                if [s for s in self.subscribers if s['topic'] == adv['topic']]:
-                    # Yes, we're interested; make a connection
-                    self._connect_subscriber(adv)
-
-            elif op == OP_SUB:
-                # Unpack the ADV body
-                adv = {}
-                adv['topic'] = topic
-                adv['guid'] = guid
-                adv['flags'] = flags
-                addresslength = struct.unpack_from('<H', data, offset)[0]
-                offset += 2
-                addr = data[offset:offset + addresslength]
-                adv['address'] = addr.decode('utf-8')
-                offset += addresslength
-
-                # check for a new listener
-                listeners = self._listeners
-                if topic in listeners and addr not in listeners[topic]:
-                    [self._advertise(p) for p in self.publishers
-                     if p['topic'] == topic]
-
-                # update our listeners
-                if topic in listeners:
-                    listeners[topic][addr] = time.time()
-
-            else:
-                self.log.warn('Warning: got unrecognized OP: %d' % op)
-
-        except Exception as e:
-            self.log.exception(e)
-            self.log.warn('Warning: exception while processing SUB or ADV '
-                          'message: %s' % e)
-
-    def _connect_subscriber(self, adv):
-        """
-        Internal method to connect to a publisher.
-        """
-        # Choose the best address to use.  If the publisher's GUID is the same
-        # as our GUID, then we must both be in the same process, in which case
-        # we'd like to use an 'inproc://' address.  Otherwise, fall back on
-        # 'tcp://'.
-        if adv['address'].startswith(('tcp', 'ipc')):
-            if adv['guid'] == self.guid:
-                # Us; skip it
-                return
-        elif adv['address'].startswith('inproc'):
-            if adv['guid'] != self.guid:
-                # Not us; skip it
-                return
-        else:
-            self.log.warn('Warning: ignoring unknown address type: %s' %
-                          (adv['address']))
+        if topic not in self._publisher.listeners:
             return
 
-        # Are we already connected to this publisher for this topic?
-        if [c for c in self.sub_connections
-                if c['topic'] == adv['topic'] and c['guid'] == adv['guid']]:
-            return
-
-        # Are we already connected to this publisher for this topic
-        # on this address?
-        for c in self.sub_connections:
-            if c['topic'] == adv['topic'] and c['address'] == adv['address']:
-                c['guid'] == adv['guid']
-                return
-
-        # Connect our subscriber socket
-        conn = {}
-        conn['socket'] = self.sub_socket
-        conn['topic'] = adv['topic']
-        conn['address'] = adv['address']
-        conn['guid'] = adv['guid']
-        conn['socket'].setsockopt(zmq.SUBSCRIBE, adv['topic'].encode('utf-8'))
-
-        if not any([s['address'] == adv['address']
-                    for s in self.sub_connections]):
-            conn['socket'].connect(adv['address'])
-
-        self.sub_connections.append(conn)
-        self.log.info('Connected to %s for %s (%s != %s)' %
-                      (adv['address'], adv['topic'], adv['guid'], self.guid))
+        self._publisher.publish(topic, msg)
+        [cb(msg) for cb in self._local_subs[topic]]
 
     def get_listeners(self, topic):
         """
@@ -556,10 +476,7 @@ class DZMQ(object):
         topic : str
             Name of topic.
         """
-        if topic not in self._listeners:
-            return []
-        return [addr for (addr, tstamp) in self._listeners[topic].items()
-                if (time.time() - tstamp) < 2 * HB_REPEAT_PERIOD]
+        return self._publisher.get_listeners(topic)
 
     def register_cb(self, cb, obj=None):
         """Register a callback to the spinOnce loop.
@@ -573,11 +490,30 @@ class DZMQ(object):
             call when idle.
         """
         if not obj:
-            self.idle_cbs.append(cb)
+            self._idle_cbs.append(cb)
             return
 
-        self.poller.register(obj, zmq.POLLIN)
-        self.poll_cbs[obj] = cb
+        self._poller.register(obj, zmq.POLLIN)
+        self._poll_cbs[obj] = cb
+
+    def _handle_bcast_recv(self):
+
+        data = self._broadcast.handle_recv()
+        if not data:
+            return
+
+        topic = data['topic']
+        addr = data['addr']
+
+        if data['type'] == 'sub':
+            listeners = self._publisher.listeners
+            if topic in listeners:
+                if addr not in listeners[topic]:
+                    self._broadcast.advertise(topic, self.address)
+                listeners[topic][addr] = time.time()
+
+        elif data['type'] == 'adv':
+            self._subscriber.handle_adv(data)
 
     def spinOnce(self, timeout=0.01):
         """
@@ -599,48 +535,27 @@ class DZMQ(object):
             timeout = int(timeout * 1e3)
 
         # Look for sockets that are ready to read
-        items = dict(self.poller.poll(timeout))
+        items = dict(self._poller.poll(timeout))
 
-        for (obj, poll_cb) in self.poll_cbs.items():
+        for (obj, poll_cb) in self._poll_cbs.items():
             if obj in items or obj.fileno() in items:
                 poll_cb()
 
-        if items.get(self.bcast_recv.fileno(), None) == zmq.POLLIN:
+        if items.get(self._broadcast.sock.fileno(), None) == zmq.POLLIN:
             self._handle_bcast_recv()
 
-            # these come in bursts, so keep checking for them
-            # to avoid a context switch
-            while 1:
-                r, w, e = select.select([self.bcast_recv], [], [], 0)
-                if r:
-                    self._handle_bcast_recv()
-                else:
-                    break
-
-        if items.get(self.sub_socket, None) == zmq.POLLIN:
-            # Get the message (assuming that we get it all in one read)
-            topic, msg = self.sub_socket.recv_multipart()
-            topic = topic.decode('utf-8')
-
-            msg = unpack_msg(msg)
-
-            subs = [s for s in self.subscribers if s['topic'] == topic]
-            if subs:
-                if len(msg) == 1 and '___payload__' in msg:
-                    msg = msg['___payload__']
-                [s['cb'](msg) for s in subs]
-                self.log.debug('Got message: ' + topic)
+        if items.get(self._subscriber.sock, None) == zmq.POLLIN:
+            self._subscriber.handle_recv()
 
         if (time.time() - self._last_hb) > HB_REPEAT_PERIOD:
             self._last_hb = time.time()
-            [self._advertise(p) for p in self.publishers]
-            [self._subscribe(s) for s in self.subscribers]
+            self._broadcast.send_all()
 
         if items and timeout:
             self.spinOnce(timeout=0)  # avoid a context switch
 
         if not items or timeout:
-            [cb() for cb in self.idle_cbs]
+            [cb() for cb in self._idle_cbs]
 
     def spin(self):
         """
@@ -653,65 +568,6 @@ class DZMQ(object):
         """
         Close the DZMQ Interface and all of its ports.
         """
-        self.bcast_recv.close()
-        self.bcast_send.close()
-        self.pub_socket.close()
-        self.sub_socket.close()
-
-# Stolen from rosgraph
-# https://github.com/ros/ros_comm/blob/hydro-devel/tools/rosgraph/src/rosgraph/network.py
-# cache for performance reasons
-_local_addrs = None
-
-
-def get_local_addresses(use_ipv6=False, addrs=None, ifaces=None):
-    """
-    Get a list of local ip addresses that meet a given criteria.
-
-    Parameters
-    ----------
-    use_ipv6 : bool, optional
-        Whether to allow ipv6 addresses.
-    addrs : list of strings, optional
-        List of addresses to look for.
-    ifaces : list strings, optional
-        List of ethernet interfaces.
-
-    Returns
-    -------
-    address : list of strings
-        List of available local ip addresses that meet a given criteria.
-    """
-    # cache address data as it can be slow to calculate
-    global _local_addrs
-    if _local_addrs is not None:
-        return _local_addrs
-
-    ifaces = ifaces or netifaces.interfaces()
-
-    v4addrs = []
-    v6addrs = []
-    for iface in ifaces:
-        try:
-            ifaddrs = netifaces.ifaddresses(iface)
-        except ValueError:
-            # even if interfaces() returns an interface name
-            # ifaddresses() might raise a ValueError
-            # https://bugs.launchpad.net/ubuntu/+source/netifaces/+bug/753009
-            continue
-        if socket.AF_INET in ifaddrs:
-            v4addrs.extend([addr
-                            for addr in ifaddrs[socket.AF_INET]
-                            if 'broadcast' in addr])
-        if socket.AF_INET6 in ifaddrs:
-            v6addrs.extend([addr
-                            for addr in ifaddrs[socket.AF_INET6]
-                            if 'broadcast' in addr])
-    if use_ipv6:
-        local_addrs = v6addrs + v4addrs
-    else:
-        local_addrs = v4addrs
-    if addrs:
-        local_addrs = [a for a in local_addrs if not a['addr'] in addrs]
-    _local_addrs = local_addrs
-    return local_addrs
+        self._broadcast.sock.close()
+        self._publisher.sock.close()
+        self._subscriber.sock.close()
