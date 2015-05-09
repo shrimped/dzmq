@@ -237,6 +237,66 @@ class Publisher(object):
         self.sock.send_multipart((topic.encode('utf-8'), packed_msg))
 
 
+class Subscriber(object):
+
+    def __init__(self, socket, log):
+        self.sock = socket
+        self.log = log
+        self.sock.setsockopt(zmq.LINGER, 0)
+        self.subs = dict()
+        self.sub_connections = []
+
+    def subscribe(self, topic, cb):
+        if topic not in self.subs:
+            self.subs[topic] = []
+        self.subs[topic].append(cb)
+
+    def handle_adv(self, adv):
+        """
+        Internal method to connect to a publisher.
+        """
+        if adv['topic'] not in self.subs:
+            return
+
+        # Are we already connected to this publisher for this topic?
+        if [c for c in self.sub_connections
+                if c['topic'] == adv['topic'] and c['guid'] == adv['guid']]:
+            return
+
+        # Are we already connected to this publisher for this topic
+        # on this address?
+        for c in self.sub_connections:
+            if c['topic'] == adv['topic'] and c['addr'] == adv['addr']:
+                c['guid'] == adv['guid']
+                return
+
+        # Connect our subscriber socket
+        conn = {}
+        conn['socket'] = self.sock
+        conn['topic'] = adv['topic']
+        conn['addr'] = adv['addr']
+        conn['guid'] = adv['guid']
+        conn['socket'].setsockopt(zmq.SUBSCRIBE, adv['topic'].encode('utf-8'))
+
+        if not any([s['addr'] == adv['addr']
+                    for s in self.sub_connections]):
+            conn['socket'].connect(adv['addr'])
+
+        self.sub_connections.append(conn)
+        self.log.info('Connected to %s for %s (%s)' %
+                      (adv['addr'], adv['topic'], adv['guid']))
+
+    def handle_recv(self):
+        # Get the message (assuming that we get it all in one read)
+        topic, msg = self.sock.recv_multipart()
+        topic = topic.decode('utf-8')
+        if topic not in self.subs:
+            return
+        msg = pickle.loads(msg)
+        [cb(msg) for cb in self.subs[topic]]
+        self.log.debug('Got message: %s' % topic)
+
+
 class DZMQ(object):
 
     """
@@ -284,9 +344,6 @@ class DZMQ(object):
         self.address = address
         self._broadcast = Broadcaster(self.log)
 
-        # Bookkeeping (which should be cleaned up)
-        self.subscribers = []
-        self.sub_connections = []
         self.poller = zmq.Poller()
 
         signal.signal(signal.SIGINT, self._sighandler)
@@ -307,12 +364,11 @@ class DZMQ(object):
 
         self._publisher = Publisher(pub_socket, self.log)
 
-        self.sub_socket = self.context.socket(zmq.SUB)
-        self.sub_socket.setsockopt(zmq.LINGER, 0)
-        self.sub_socket_addrs = []
+        sub_socket = self.context.socket(zmq.SUB)
+        self._subscriber = Subscriber(sub_socket, self.log)
 
         self.poller.register(self._broadcast.sock, zmq.POLLIN)
-        self.poller.register(self.sub_socket, zmq.POLLIN)
+        self.poller.register(sub_socket, zmq.POLLIN)
 
         self.poll_cbs = dict()
         self.idle_cbs = []
@@ -347,11 +403,6 @@ class DZMQ(object):
         if topic not in self._local_subs:
             self._local_subs[topic] = []
 
-        # Also connect to internal subscribers, if there are any
-        for sub in self.subscribers:
-            if sub['topic'] == topic:
-                self._local_subs[topic].append(sub)
-
     def unadvertise(self, topic):
         """
         Unadvertise a topic.
@@ -374,16 +425,13 @@ class DZMQ(object):
         cb : callable
             Callable that accepts one argument (msg).
         """
-        # Record what we're doing
-        subscriber = {}
-        subscriber['topic'] = topic
-        subscriber['cb'] = cb
-        self.subscribers.append(subscriber)
-        self._broadcast.subscribe(subscriber['topic'], self.address)
+        self._subscriber.subscribe(topic, cb)
+        self._broadcast.subscribe(topic, self.address)
 
-        # Also connect to internal publishers, if there are any
-        if topic in self._local_subs:
-            self._local_subs[topic].append(subscriber)
+        if topic not in self._local_subs:
+            self._local_subs[topic] = []
+
+        self._local_subs[topic].append(cb)
 
     def unsubscribe(self, topic):
         """
@@ -394,7 +442,8 @@ class DZMQ(object):
         topic : str
             Name of topic.
         """
-        self.subscribers = [s for s in self.subscribers if s['topic'] != topic]
+        self._subscriber.subs.pop(topic, None)
+        self._local_subs.pop(topic, None)
 
     def publish(self, topic, msg):
         """
@@ -412,40 +461,7 @@ class DZMQ(object):
             return
 
         self._publisher.publish(topic, msg)
-        for sub in self._local_subs[topic]:
-            sub['cb'](msg)
-
-    def _connect_subscriber(self, adv):
-        """
-        Internal method to connect to a publisher.
-        """
-        # Are we already connected to this publisher for this topic?
-        if [c for c in self.sub_connections
-                if c['topic'] == adv['topic'] and c['guid'] == adv['guid']]:
-            return
-
-        # Are we already connected to this publisher for this topic
-        # on this address?
-        for c in self.sub_connections:
-            if c['topic'] == adv['topic'] and c['addr'] == adv['addr']:
-                c['guid'] == adv['guid']
-                return
-
-        # Connect our subscriber socket
-        conn = {}
-        conn['socket'] = self.sub_socket
-        conn['topic'] = adv['topic']
-        conn['addr'] = adv['addr']
-        conn['guid'] = adv['guid']
-        conn['socket'].setsockopt(zmq.SUBSCRIBE, adv['topic'].encode('utf-8'))
-
-        if not any([s['addr'] == adv['addr']
-                    for s in self.sub_connections]):
-            conn['socket'].connect(adv['addr'])
-
-        self.sub_connections.append(conn)
-        self.log.info('Connected to %s for %s (%s)' %
-                      (adv['addr'], adv['topic'], adv['guid']))
+        [cb(msg) for cb in self._local_subs[topic]]
 
     def get_listeners(self, topic):
         """
@@ -497,10 +513,7 @@ class DZMQ(object):
                 listeners[topic][addr] = time.time()
 
         elif data['type'] == 'adv':
-            # Are we interested in this topic?
-            if [s for s in self.subscribers if s['topic'] == data['topic']]:
-                # Yes, we're interested; make a connection
-                self._connect_subscriber(data)
+            self._subscriber.handle_adv(data)
 
     def spinOnce(self, timeout=0.01):
         """
@@ -531,19 +544,8 @@ class DZMQ(object):
         if items.get(self._broadcast.sock.fileno(), None) == zmq.POLLIN:
             self._handle_bcast_recv()
 
-        if items.get(self.sub_socket, None) == zmq.POLLIN:
-            # Get the message (assuming that we get it all in one read)
-            topic, msg = self.sub_socket.recv_multipart()
-            topic = topic.decode('utf-8')
-
-            msg = pickle.loads(msg)
-
-            subs = [s for s in self.subscribers if s['topic'] == topic]
-            if subs:
-                if len(msg) == 1 and '___payload__' in msg:
-                    msg = msg['___payload__']
-                [s['cb'](msg) for s in subs]
-                self.log.debug('Got message: ' + topic)
+        if items.get(self._subscriber.sock, None) == zmq.POLLIN:
+            self._subscriber.handle_recv()
 
         if (time.time() - self._last_hb) > HB_REPEAT_PERIOD:
             self._last_hb = time.time()
@@ -568,7 +570,7 @@ class DZMQ(object):
         """
         self._broadcast.sock.close()
         self._publisher.sock.close()
-        self.sub_socket.close()
+        self._subscriber.sock.close()
 
 # Stolen from rosgraph
 # https://github.com/ros/ros_comm/blob/hydro-devel/tools/rosgraph/src/rosgraph/network.py
