@@ -478,7 +478,7 @@ class DZMQ(object):
         topic : str
             Name of topic.
         """
-        return self._publisher.get_listeners()
+        return self._publisher.get_listeners(topic)
 
     def register_cb(self, cb, obj=None):
         """Register a callback to the spinOnce loop.
