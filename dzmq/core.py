@@ -547,8 +547,7 @@ class DZMQ(object):
             items = dict(self._poller.poll(timeout))
         except zmq.ZMQError as e:
             if e.errno == errno.EINTR:
-                self.close()
-                return
+                raise KeyboardInterrupt
             else:
                 raise
 
@@ -576,7 +575,11 @@ class DZMQ(object):
         Give control to the message event loop.
         """
         while True:
-            self.spinOnce()
+            try:
+                self.spinOnce()
+            except KeyboardInterrupt:
+                self.close()
+                return
 
     def close(self):
         """
