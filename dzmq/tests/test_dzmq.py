@@ -11,6 +11,8 @@ except ImportError:
     np = None
 
 import unittest
+import tempfile
+import os
 
 
 class TestPubSub(unittest.TestCase):
@@ -150,6 +152,37 @@ class TestPubSub(unittest.TestCase):
         # check the output
         output = self.get_log()
         assert "Got message: yeah_yeah" not in output, output
+
+    def test_idle_cb(self):
+        self._temp = 0
+
+        def cb():
+            self._temp = 1
+
+        self.sub.register_cb(cb)
+        self.sub.spinOnce()
+        assert self._temp == 1
+
+    def test_poll_cb(self):
+        if os.name == 'nt':
+            return
+
+        dname = tempfile.mkdtemp()
+        fname = os.path.join(dname, 'test.pipe')
+        os.mkfifo(fname)
+
+        r = os.open(fname, os.O_RDONLY | os.O_NONBLOCK)
+        w = os.open(fname, os.O_WRONLY | os.O_NONBLOCK)
+
+        def cb():
+            assert os.read(r, 10) == b'hello\n'
+
+        self.pub.register_cb(cb, r)
+        os.write(w, b'hello\n')
+        self.pub.spinOnce()
+
+        os.write(w, b'goodbye\n')
+        assert os.read(r, 10) == b'goodbye\n'
 
     def teardown(self):
         self.pub.close()
