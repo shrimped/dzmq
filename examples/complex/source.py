@@ -17,8 +17,9 @@ if __name__ == '__main__':
         d.spinOnce(0.1)
 
     i = 0
+    msg = dict(a=1000, b='hello', c=1.5)
     while i < 1000:
-        d.publish('sensor_data', 'other data' * 100)
+        d.publish('sensor_data', msg)
         d.spinOnce(0.0001)
         i += 1
     d.publish('sensor_data', None)
