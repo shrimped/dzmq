@@ -284,6 +284,7 @@ class Subscriber(object):
         self.conns.append(conn)
         self.log.info('Connected to %s for %s' %
                       (adv['addr'], adv['topic']))
+        return True
 
     def handle_recv(self):
         # Get the message (assuming that we get it all in one read)
@@ -373,7 +374,6 @@ class DZMQ(object):
         self._local_subs = dict()
 
         self._last_hb = 0
-        self._hb_period = 0.1
 
         self.advertise('_heartbeat')
         self.subscribe('_heartbeat', self._handle_hb)
@@ -381,7 +381,6 @@ class DZMQ(object):
     def _handle_hb(self, msg):
         if self.address not in msg['subs']:
             return
-        self._hb_period = HB_REPEAT_PERIOD
         listeners = self._publisher.listeners
         addr = msg['address']
         for topic in msg['subs'][self.address]:
@@ -515,7 +514,16 @@ class DZMQ(object):
                     self._broadcast.advertise(topic, self.address)
 
         elif data['type'] == 'adv':
-            self._subscriber.handle_adv(data)
+            if self._subscriber.handle_adv(data):
+                self._send_hb()
+
+    def _send_hb(self):
+
+        self._last_hb = time.time()
+        self._broadcast.send_all()
+        msg = dict(address=self.address,
+                   subs=self._subscriber.status)
+        self._publisher.publish('_heartbeat', msg)
 
     def spinOnce(self, timeout=0.01):
         """
@@ -554,12 +562,8 @@ class DZMQ(object):
         if items.get(self._subscriber.sock, None) == zmq.POLLIN:
             self._subscriber.handle_recv()
 
-        if (time.time() - self._last_hb) > self._hb_period:
-            self._last_hb = time.time()
-            self._broadcast.send_all()
-            msg = dict(address=self.address,
-                       subs=self._subscriber.status)
-            self._publisher.publish('_heartbeat', msg)
+        if (time.time() - self._last_hb) > HB_REPEAT_PERIOD:
+            self._send_hb()
 
         if items and timeout:
             self.spinOnce(timeout=0)  # avoid a context switch
