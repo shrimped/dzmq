@@ -99,7 +99,6 @@ class Broadcaster(object):
                                        socket.IP_ADD_MEMBERSHIP,
                                        mreq)
         self.pubs = dict()
-        self.subs = dict()
         self.log.info("Opened (%s, %s)" %
                       (self.host, self.port))
 
@@ -121,20 +120,17 @@ class Broadcaster(object):
         self.sock.sendto(msg, (self.host, self.port))
 
     def subscribe(self, topic, address):
-        msg = self.subs.get(topic, None)
-        if not msg:
-            msg = b''
-            msg += struct.pack('<H', VERSION)
-            msg += self.guid.bytes[:GUID_LENGTH]
-            msg += struct.pack('<B', len(topic))
-            msg += topic.encode('utf-8')
-            msg += struct.pack('<B', OP_SUB)
-            # Flags unused for now
-            flags = [0x00] * FLAGS_LENGTH
-            msg += struct.pack('<%dB' % FLAGS_LENGTH, *flags)
-            msg += struct.pack('<H', len(address))
-            msg += address.encode('utf-8')
-            self.subs[topic] = msg
+        msg = b''
+        msg += struct.pack('<H', VERSION)
+        msg += self.guid.bytes[:GUID_LENGTH]
+        msg += struct.pack('<B', len(topic))
+        msg += topic.encode('utf-8')
+        msg += struct.pack('<B', OP_SUB)
+        # Flags unused for now
+        flags = [0x00] * FLAGS_LENGTH
+        msg += struct.pack('<%dB' % FLAGS_LENGTH, *flags)
+        msg += struct.pack('<H', len(address))
+        msg += address.encode('utf-8')
         self.sock.sendto(msg, (self.host, self.port))
 
     def handle_recv(self):
@@ -213,9 +209,6 @@ class Broadcaster(object):
         for msg in self.pubs.values():
             self.sock.sendto(msg, (self.host, self.port))
 
-        for msg in self.subs.values():
-            self.sock.sendto(msg, (self.host, self.port))
-
 
 class Publisher(object):
 
@@ -250,6 +243,7 @@ class Subscriber(object):
         self.sock.setsockopt(zmq.LINGER, 0)
         self.subs = dict()
         self.sub_connections = []
+        self.status = defaultdict(list)
 
     def subscribe(self, topic, cb):
         if topic not in self.subs:
@@ -282,6 +276,8 @@ class Subscriber(object):
         conn['addr'] = adv['addr']
         conn['guid'] = adv['guid']
         conn['socket'].setsockopt(zmq.SUBSCRIBE, adv['topic'].encode('utf-8'))
+
+        self.status[adv['addr']].append(adv['topic'])
 
         if not any([s['addr'] == adv['addr']
                     for s in self.sub_connections]):
@@ -383,7 +379,21 @@ class DZMQ(object):
         poller.poll()
 
         self._last_hb = 0
+        self._hb_period = 0.1
         self._local_subs = dict()
+
+        self.advertise('_heartbeat')
+        self.subscribe('_heartbeat', self._handle_hb)
+
+    def _handle_hb(self, msg):
+        if self.address not in msg['subs']:
+            return
+        self._hb_period = HB_REPEAT_PERIOD
+        listeners = self._publisher.listeners
+        addr = msg['address']
+        for topic in msg['subs'][self.address]:
+            if topic in listeners:
+                listeners[topic][addr] = time.time()
 
     def _sighandler(self, sig, frame):
         self.close()
@@ -510,7 +520,6 @@ class DZMQ(object):
             if topic in listeners:
                 if addr not in listeners[topic]:
                     self._broadcast.advertise(topic, self.address)
-                listeners[topic][addr] = time.time()
 
         elif data['type'] == 'adv':
             self._subscriber.handle_adv(data)
@@ -547,9 +556,12 @@ class DZMQ(object):
         if items.get(self._subscriber.sock, None) == zmq.POLLIN:
             self._subscriber.handle_recv()
 
-        if (time.time() - self._last_hb) > HB_REPEAT_PERIOD:
+        if (time.time() - self._last_hb) > self._hb_period:
             self._last_hb = time.time()
             self._broadcast.send_all()
+            msg = dict(address=self.address,
+                       subs=self._subscriber.status)
+            self.publish('_heartbeat', msg)
 
         if items and timeout:
             self.spinOnce(timeout=0)  # avoid a context switch

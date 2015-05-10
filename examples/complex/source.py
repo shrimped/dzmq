@@ -1,8 +1,7 @@
 #!/usr/bin/env python
-
+from __future__ import print_function
 import dzmq
 import sys
-import time
 
 
 if __name__ == '__main__':
@@ -15,8 +14,7 @@ if __name__ == '__main__':
     d.advertise('sensor_data')
 
     while not d.get_listeners('sensor_data'):
-        d.spinOnce()
-    time.sleep(0.001)  # wait for sink to get our advertisement back
+        d.spinOnce(0.1)
 
     i = 0
     while i < 1000:
