@@ -282,8 +282,8 @@ class Subscriber(object):
             conn['socket'].connect(adv['addr'])
 
         self.conns.append(conn)
-        self.log.info('Connected to %s for %s (%s)' %
-                      (adv['addr'], adv['topic'], adv['guid']))
+        self.log.info('Connected to %s for %s' %
+                      (adv['addr'], adv['topic']))
 
     def handle_recv(self):
         # Get the message (assuming that we get it all in one read)
