@@ -1,3 +1,5 @@
+[![Coverage Status](https://coveralls.io/repos/shrimped/dzmq/badge.svg)](https://coveralls.io/r/shrimped/dzmq)
+
 Simple library (with reference Python implementation) to do discovery
 on top of zeromq messaging. This is a modification of the ROS 2.0 zmq
 prototype to implement messaging + discovery via zmq with serialization
