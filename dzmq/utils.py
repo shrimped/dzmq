@@ -1,12 +1,7 @@
 import logging
-import base64
 import socket
 
 import netifaces
-try:
-    import ujson as json
-except ImportError:
-    import json
 
 try:
     import numpy as np
@@ -58,66 +53,6 @@ def _setup_log():
 
 
 _setup_log()
-
-
-def unpack_msg(data):
-    """
-    Unpack a binary data message into a dictionary.
-
-    Parameters
-    ----------
-    data : bytes
-        Binary data message.
-
-    Returns
-    -------
-    out : dict
-        Unpacked message.
-    """
-    def unpack(obj):
-        obj = json.loads(obj.decode('utf-8'))
-        for (key, value) in obj.items():
-            if isinstance(value, dict):
-                if ('shape' in value and 'dtype' in value and 'data' in value
-                        and np):
-                    value['data'] = base64.b64decode(value['data'])
-                    obj[key] = np.fromstring(value['data'],
-                                             dtype=value['dtype'])
-                    obj[key] = obj[key].reshape(value['shape'])
-                else:
-                    # Make sure to recurse into sub-dicts
-                    obj[key] = unpack(value)
-        return obj
-
-    return unpack(data)
-
-
-def pack_msg(obj):
-    """
-    Pack an object into a binary data message.
-
-    Parameters
-    ----------
-    obj : str or dictionary
-        Object to pack.
-
-    Returns
-    -------
-    out : bytes
-        Binary data message.
-    """
-    if not isinstance(obj, dict):
-        obj = dict(___payload__=obj)
-    for (key, value) in obj.items():
-        if np and isinstance(value, np.ndarray):
-            data = base64.b64encode(value.tobytes()).decode('utf-8')
-            obj[key] = dict(shape=value.shape,
-                            dtype=value.dtype.str,
-                            data=data)
-        elif isinstance(value, dict):  # Make sure we recurse into sub-dicts
-            obj[key] = pack_msg(value)
-
-    return json.dumps(obj).encode('utf-8')
 
 
 # Taken from rosgraph
