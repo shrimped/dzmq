@@ -54,7 +54,7 @@ class Broadcaster(object):
             addrs = get_local_addresses(ifaces=[os.environ[DZMQ_IFACE_KEY]])
         if not addrs:
             addrs = get_local_addresses()
-        if addrs:
+        if addrs and DZMQ_USE_LOOPBACK not in os.environ:
             self.ipaddr = addrs[0]['addr']
             self.host = addrs[0]['broadcast']
         else:
