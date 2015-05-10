@@ -1,5 +1,5 @@
 import socket
-import zmq
+import errno
 import uuid
 import os
 import logging
@@ -11,6 +11,8 @@ import sys
 import time
 import signal
 import pickle
+
+import zmq
 
 from .utils import get_log, get_local_addresses
 
@@ -239,7 +241,7 @@ class Subscriber(object):
         self.log = log
         self.sock.setsockopt(zmq.LINGER, 0)
         self.subs = dict()
-        self.sub_connections = []
+        self.conns = []
         self.status = defaultdict(list)
 
     def subscribe(self, topic, cb):
@@ -264,13 +266,13 @@ class Subscriber(object):
             return
 
         # Are we already connected to this publisher for this topic?
-        if [c for c in self.sub_connections
+        if [c for c in self.conns
                 if c['topic'] == adv['topic'] and c['guid'] == adv['guid']]:
             return
 
         # Are we already connected to this publisher for this topic
         # on this address?
-        for c in self.sub_connections:
+        for c in self.conns:
             if c['topic'] == adv['topic'] and c['addr'] == adv['addr']:
                 c['guid'] == adv['guid']
                 return
@@ -285,11 +287,10 @@ class Subscriber(object):
 
         self.status[adv['addr']].append(adv['topic'])
 
-        if not any([s['addr'] == adv['addr']
-                    for s in self.sub_connections]):
+        if not any([s['addr'] == adv['addr'] for s in self.conns]):
             conn['socket'].connect(adv['addr'])
 
-        self.sub_connections.append(conn)
+        self.conns.append(conn)
         self.log.info('Connected to %s for %s (%s)' %
                       (adv['addr'], adv['topic'], adv['guid']))
 
@@ -550,7 +551,14 @@ class DZMQ(object):
             timeout = int(timeout * 1e3)
 
         # Look for sockets that are ready to read
-        items = dict(self._poller.poll(timeout))
+        try:
+            items = dict(self._poller.poll(timeout))
+        except zmq.ZMQError as e:
+            if e.errno == errno.EINTR:
+                self.close()
+                return
+            else:
+                raise
 
         for (obj, poll_cb) in self._poll_cbs.items():
             if obj in items or obj.fileno() in items:
@@ -580,7 +588,7 @@ class DZMQ(object):
         Give control to the message event loop.
         """
         while True:
-            self.spinOnce(0.01)
+            self.spinOnce()
 
     def close(self):
         """
