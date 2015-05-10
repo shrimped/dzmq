@@ -10,10 +10,12 @@ try:
 except ImportError:
     np = None
 
+import unittest
 
-class TestPubSub(object):
 
-    def setup(self):
+class TestPubSub(unittest.TestCase):
+
+    def setUp(self):
         self.pub = DZMQ()
 
         self.sub = DZMQ()
@@ -117,15 +119,7 @@ class TestPubSub(object):
         self.synch('yeah_yeah')
 
         self.pub.unadvertise('yeah_yeah')
-        self.pub.publish('yeah_yeah', payload)
-
-        self.sub.spinOnce()
-        self.sub.spinOnce()
-
-        # check the output
-        output = self.get_log()
-        assert "Connected to" in output
-        assert "Got message: yeah_yeah" not in output
+        self.assertRaises(ValueError, self.pub.publish, 'yeah_yeah', payload)
 
     def test_unsubscribe(self):
         self.pub.advertise('yeah_yeah')
