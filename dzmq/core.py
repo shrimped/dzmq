@@ -18,7 +18,7 @@ from .utils import get_log, get_local_addresses
 
 # Defaults and overrides
 BCAST_PORT = 11312
-MULTICAST_GRP = '224.1.1.1'
+MULTICAST_GRP = '225.25.25.25'
 DZMQ_PORT_KEY = 'DZMQ_BCAST_PORT'
 DZMQ_HOST_KEY = 'DZMQ_BCAST_HOST'
 DZMQ_IP_KEY = 'DZMQ_IP'
