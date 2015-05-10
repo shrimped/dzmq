@@ -199,9 +199,6 @@ class Broadcaster(object):
             self.log.warn('Warning: exception while processing SUB or ADV '
                           'message: %s' % e)
 
-    def unsubscribe(self, topic):
-        self.subs.pop(topic, None)
-
     def unadvertise(self, topic):
         self.pubs.pop(topic, None)
 
@@ -249,6 +246,15 @@ class Subscriber(object):
         if topic not in self.subs:
             self.subs[topic] = []
         self.subs[topic].append(cb)
+
+    def unsubscribe(self, topic):
+        self.subs.pop(topic, None)
+
+        status = dict()
+        for (addr, topics) in self.status.items():
+            status[addr] = [t for t in topics if not t == topic]
+
+        self.status = status
 
     def handle_adv(self, adv):
         """
@@ -456,7 +462,7 @@ class DZMQ(object):
         topic : str
             Name of topic.
         """
-        self._subscriber.subs.pop(topic, None)
+        self._subscriber.unsubscribe(topic)
         self._local_subs.pop(topic, None)
 
     def publish(self, topic, msg):
