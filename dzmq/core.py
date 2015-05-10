@@ -559,7 +559,7 @@ class DZMQ(object):
             self._broadcast.send_all()
             msg = dict(address=self.address,
                        subs=self._subscriber.status)
-            self.publish('_heartbeat', msg)
+            self._publisher.publish('_heartbeat', msg)
 
         if items and timeout:
             self.spinOnce(timeout=0)  # avoid a context switch
