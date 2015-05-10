@@ -48,13 +48,15 @@ class Broadcaster(object):
 
         # What IP address will we give to others to use when contacting us?
         addrs = []
-        if DZMQ_IP_KEY in os.environ:
+        if 'DZMQ_USE_LOOPBACK' in os.environ:
+            pass
+        elif DZMQ_IP_KEY in os.environ:
             addrs = get_local_addresses(addrs=[os.environ[DZMQ_IP_KEY]])
         elif DZMQ_IFACE_KEY in os.environ:
             addrs = get_local_addresses(ifaces=[os.environ[DZMQ_IFACE_KEY]])
         if not addrs:
             addrs = get_local_addresses()
-        if addrs and 'DZMQ_USE_LOOPBACK' not in os.environ:
+        if addrs:
             self.ipaddr = addrs[0]['addr']
             self.host = addrs[0]['broadcast']
         else:
