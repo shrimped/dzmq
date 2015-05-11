@@ -82,24 +82,20 @@ class Broadcaster(object):
             self.host = env[DZMQ_HOST_KEY]
 
         # Set up to send broadcasts
-        self.sock = socket.socket(socket.AF_INET,  # Internet
-                                        socket.SOCK_DGRAM,  # UDP
-                                        socket.IPPROTO_UDP)
+        self.sock = socket.socket(socket.AF_INET,  socket.SOCK_DGRAM,
+                                  socket.IPPROTO_UDP)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if sys.platform == 'darwin':
-            self.sock.setsockopt(socket.SOL_SOCKET,
-                                       socket.SO_REUSEPORT, 1)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         self.sock.bind(('', self.port))
 
         if self.host == MULTICAST_GRP:
-            self.sock.setsockopt(socket.IPPROTO_IP,
-                                       socket.IP_MULTICAST_TTL, 2)
+            self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
             mreq = struct.pack("4sl", socket.inet_aton(MULTICAST_GRP),
                                socket.INADDR_ANY)
-            self.sock.setsockopt(socket.IPPROTO_IP,
-                                       socket.IP_ADD_MEMBERSHIP,
-                                       mreq)
+            self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                                 mreq)
         self.pubs = dict()
         self.log.info("Opened (%s, %s)" %
                       (self.host, self.port))
