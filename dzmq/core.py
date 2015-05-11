@@ -2,7 +2,6 @@ import socket
 import errno
 import uuid
 import os
-import logging
 import struct
 import atexit
 from collections import defaultdict
@@ -36,7 +35,6 @@ VERSION = 0x0001
 TOPIC_MAXLENGTH = 192
 FLAGS_LENGTH = 16
 ADDRESS_MAXLENGTH = 267
-DEBUG = False
 
 
 class Broadcaster(object):
@@ -293,8 +291,7 @@ class Subscriber(object):
             return
         msg = pickle.loads(msg)
         [cb(msg) for cb in self.subs[topic]]
-        if DEBUG:
-            self.log.debug('Got message: %s' % topic)
+        self.log.debug('Got message: ' + topic)
 
 
 class DZMQ(object):
@@ -338,9 +335,6 @@ class DZMQ(object):
         self.address = address
 
         atexit.register(self.close)
-
-        if DEBUG:
-            self.log.setLevel(logging.DEBUG)
 
         self._broadcast = Broadcaster(self.log)
 
