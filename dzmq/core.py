@@ -293,7 +293,8 @@ class Subscriber(object):
             return
         msg = pickle.loads(msg)
         [cb(msg) for cb in self.subs[topic]]
-        self.log.debug('Got message: %s' % topic)
+        if DEBUG:
+            self.log.debug('Got message: %s' % topic)
 
 
 class DZMQ(object):
@@ -493,7 +494,6 @@ class DZMQ(object):
             self._idle_cbs.append(cb)
             return
 
-        print(obj, repr(obj))
         self._poller.register(obj, zmq.POLLIN)
         self._poll_cbs[obj] = cb
 
