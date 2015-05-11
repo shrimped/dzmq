@@ -23,6 +23,7 @@ DZMQ_PORT_KEY = 'DZMQ_BCAST_PORT'
 DZMQ_HOST_KEY = 'DZMQ_BCAST_HOST'
 DZMQ_IP_KEY = 'DZMQ_IP'
 DZMQ_IFACE_KEY = 'DZMQ_IFACE'
+DZMQ_LOOPBACK_KEY = 'DZMQ_USE_LOOPBACK'
 
 # Constants
 OP_ADV = 0x01
@@ -49,7 +50,7 @@ class Broadcaster(object):
         # What IP address will we give to others to use when contacting us?
         addrs = []
         env = os.environ
-        if 'DZMQ_USE_LOOPBACK' not in env:
+        if DZMQ_LOOPBACK_KEY not in env:
             if DZMQ_IP_KEY in env:
                 addrs = get_local_addresses(addrs=[env[DZMQ_IP_KEY]])
             elif DZMQ_IFACE_KEY in env:
