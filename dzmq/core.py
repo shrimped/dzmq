@@ -48,14 +48,14 @@ class Broadcaster(object):
 
         # What IP address will we give to others to use when contacting us?
         addrs = []
-        if 'DZMQ_USE_LOOPBACK' in os.environ:
-            pass
-        elif DZMQ_IP_KEY in os.environ:
-            addrs = get_local_addresses(addrs=[os.environ[DZMQ_IP_KEY]])
-        elif DZMQ_IFACE_KEY in os.environ:
-            addrs = get_local_addresses(ifaces=[os.environ[DZMQ_IFACE_KEY]])
-        if not addrs:
-            addrs = get_local_addresses()
+        env = os.environ
+        if 'DZMQ_USE_LOOPBACK' not in env:
+            if DZMQ_IP_KEY in env:
+                addrs = get_local_addresses(addrs=[env[DZMQ_IP_KEY]])
+            elif DZMQ_IFACE_KEY in env:
+                addrs = get_local_addresses(ifaces=[env[DZMQ_IFACE_KEY]])
+            if not addrs:
+                addrs = get_local_addresses()
         if addrs:
             self.ipaddr = addrs[0]['addr']
             self.host = addrs[0]['broadcast']
@@ -71,14 +71,14 @@ class Broadcaster(object):
                 self.host = MULTICAST_GRP
 
         # What's our broadcast port?
-        if DZMQ_PORT_KEY in os.environ:
-            self.port = int(os.environ[DZMQ_PORT_KEY])
+        if DZMQ_PORT_KEY in env:
+            self.port = int(env[DZMQ_PORT_KEY])
         else:
             # Take the default
             self.port = BCAST_PORT
         # What's our broadcast host?
-        if DZMQ_HOST_KEY in os.environ:
-            self.host = os.environ[DZMQ_HOST_KEY]
+        if DZMQ_HOST_KEY in env:
+            self.host = env[DZMQ_HOST_KEY]
 
         # Set up to send broadcasts
         self.sock = socket.socket(socket.AF_INET,  # Internet
