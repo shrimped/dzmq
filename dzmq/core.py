@@ -360,14 +360,15 @@ class DZMQ(object):
         self._subscriber = Subscriber(sub_socket, self.log)
 
         self._poller = zmq.Poller()
-        self._poller.register(self._broadcast.sock, zmq.POLLIN)
-        self._poller.register(sub_socket, zmq.POLLIN)
 
         self._poll_cbs = dict()
         self._idle_cbs = []
         self._local_subs = dict()
+        self._periodic_cbs = dict()
 
-        self._last_hb = 0
+        self.register_periodic_cb(self._send_hb, HB_REPEAT_PERIOD)
+        self.register_cb(self._subscriber.handle_recv, sub_socket)
+        self.register_cb(self._handle_bcast_recv, self._broadcast.sock)
 
         self.advertise('_heartbeat')
         self.subscribe('_heartbeat', self._handle_hb)
@@ -488,8 +489,23 @@ class DZMQ(object):
             self._idle_cbs.append(cb)
             return
 
+        if hasattr(obj, 'fileno'):
+            obj = obj.fileno()
+
         self._poller.register(obj, zmq.POLLIN)
         self._poll_cbs[obj] = cb
+
+    def register_periodic_cb(self, cb, period):
+        """Register a periodic callback.
+
+        Parameters
+        ----------
+        cb : callable
+            Callback to register.
+        period : float
+            Callback period in seconds.
+        """
+        self._periodic_cbs[cb] = (period, 0)
 
     def _handle_bcast_recv(self):
 
@@ -540,22 +556,25 @@ class DZMQ(object):
             items = dict(self._poller.poll(timeout))
         except zmq.ZMQError as e:
             if e.errno == errno.EINTR:
-                raise KeyboardInterrupt
+                sys.exit(0)
             else:
                 raise
+        except ValueError:
+            sys.exit(0)
 
         for (obj, poll_cb) in self._poll_cbs.items():
-            if obj in items or getattr(obj, 'fileno', None) in items:
+            if obj in items:
                 poll_cb()
 
-        if items.get(self._broadcast.sock.fileno(), None) == zmq.POLLIN:
-            self._handle_bcast_recv()
-
-        if items.get(self._subscriber.sock, None) == zmq.POLLIN:
-            self._subscriber.handle_recv()
-
-        if (time.time() - self._last_hb) > HB_REPEAT_PERIOD:
-            self._send_hb()
+        now = time.time()
+        for (cb, (period, next_time)) in self._periodic_cbs.items():
+            if next_time == 0:
+                next_time = time.time() + period
+                cb()
+            elif now >= next_time:
+                next_time += period
+                cb()
+            self._periodic_cbs[cb] = (period, next_time)
 
         if items and timeout:
             self.spinOnce(timeout=0)  # avoid a context switch
